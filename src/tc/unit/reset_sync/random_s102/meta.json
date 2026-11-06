@@ -1,0 +1,7 @@
+{
+  "data_seed": 102,
+  "vectors": 4,
+  "format_version": 1,
+  "requirement": "RST-01",
+  "generator": "model/gen/gen_reset_sync_tc.py"
+}

@@ -1,0 +1,3 @@
+# Directed reset tests, matched to docs/verification/reset_sync_vplan.md
+tb_gemm_reset_sync unit/reset_sync/TC_RST_001
+tb_gemm_reset_sync unit/reset_sync/TC_RST_002

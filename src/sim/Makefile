@@ -38,6 +38,7 @@ GFLAGS := $(addprefix -G,$(PARAMS))
 .PHONY: sim comp gui clean check-args
 
 check-args:
+	@test -z "$(TC)" -o -d "$(TCDIR)" || (echo "không có thư mục TC: $(TCDIR)"; exit 1)
 	@test -n "$(TB)"  || (echo "thiếu TB=<tên tb>"; exit 1)
 	@test -n "$(TBF)" || (echo "không tìm thấy $(TB).f trong src/tb"; exit 1)
 

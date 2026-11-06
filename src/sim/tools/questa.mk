@@ -24,6 +24,7 @@ sim: comp
 
 # GUI: giữ tín hiệu (+acc), log mọi tín hiệu vào vsim.wlf và mở cửa sổ wave
 gui: comp
+	@test -n "$(TC)" || (echo "thiếu TC=<testcase>"; exit 1)
 	@mkdir -p $(RUN)
-	cd $(RUN) && $(VSIM) $(VSIM_FLAGS) -voptargs=+acc -lib $(BUILD)/work $(TB) $(RUN_ARGS) \
+	cd $(RUN) && $(VSIM) $(filter-out -onfinish exit,$(VSIM_FLAGS)) -onfinish stop -voptargs=+acc -lib $(BUILD)/work $(TB) $(RUN_ARGS) \
 	    -do "log -r /*; add wave -r /$(TB)/*; run -all"

@@ -1,2 +1,3 @@
-# Danh sách regress "unit" — mỗi dòng: <TB> <TC> [BIẾN=giá_trị ...]
-# ví dụ: tb_gemm_vpu unit/vpu/basic
+# Directed reset template
+tb_gemm_reset_sync unit/reset_sync/TC_RST_001
+tb_gemm_reset_sync unit/reset_sync/TC_RST_002

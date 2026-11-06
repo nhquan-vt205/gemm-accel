@@ -1,58 +1,77 @@
 # gemm-accel — Bộ tăng tốc GEMM INT8 trên Chipyard SoC
 
-Đồ án tốt nghiệp: accelerator nhân ma trận INT8 (systolic array Output-Stationary P×P, VPU hậu xử lý bias/requantize/ReLU, DMA theo chuỗi descriptor, scratchpad ping-pong) gắn vào Rocket RV32IMAC qua AXI4-Lite (MMIO) và AXI4 (DMA).
+Đồ án ba thành viên: accelerator INT8, systolic array Output-Stationary P×P, VPU bias/requantize/ReLU, DMA descriptor và scratchpad ping-pong. Kết nối Rocket RV32IMAC qua AXI4-Lite (MMIO) và AXI4 (DMA).
 
 ## Cấu trúc thư mục
 
-```
+```text
 gemm-accel/
-├── docs/                       spec đã chốt (PDF + mã LaTeX)
-│   ├── system/                 spec hệ thống v1.0 — port top level, register map: KHÓA CỨNG
-│   ├── algorithm/              thuật toán GEMM, systolic, VPU
-│   ├── modules/<module>/       spec chi tiết từng module (port nội bộ, timing, assertion)
-│   └── common/preamble.tex     preamble LaTeX dùng chung cho spec module
-├── model/                      golden Python dùng chung cho mọi cấp test
-│   ├── gemm_golden.py          GEMM + bias/requant/ReLU, ghi file testcase
-│   ├── gemm_*_model.py         mô hình từng module (đã kiểm chứng khi viết spec)
-│   └── gen/                    script sinh testcase vào src/tc/
+├── docs/
+│   ├── system/                         spec hệ thống, PDF + LaTeX
+│   ├── algorithm/                      thuật toán
+│   ├── modules/<module>/               spec từng khối
+│   ├── verification/                   vplan/checklist; hiện có reset_sync_vplan.md
+│   └── common/preamble.tex
+├── model/
+│   ├── gemm_golden.py                  golden GEMM/VPU, hàm ghi dữ liệu
+│   ├── gemm_*_model.py                 model từng khối
+│   └── gen/gen_reset_sync_tc.py        generator mẫu có thể chạy
 ├── src/
-│   ├── rtl/                    RTL SystemVerilog
-│   │   ├── pkg/gemm_pkg.sv     hằng số, job_t, mã lỗi, offset thanh ghi
-│   │   ├── common/             khối dùng chung (reset sync, …)
-│   │   ├── <module>/           mỗi module một thư mục + <module>.f
-│   │   └── top/                gemm_accel_top.sv (đã nối dây đủ) + top.f
-│   ├── tb/                     testbench (harness, viết một lần)
-│   │   ├── common/             BFM, package tiện ích dùng chung
-│   │   ├── unit/<module>/      tb_<module>.sv + tb_<module>.f
-│   │   ├── integ/              ghép vài module (vd. array + vpu + sram)
-│   │   └── top/                tb_gemm_accel_top
-│   ├── tc/                     testcase SV hoặc dữ liệu sinh từ model/gen
-│   │   ├── unit/<module>/<tên>/   integ/<tên>/   top/<tên>/
-│   └── sim/                    chạy mô phỏng
-│       ├── Makefile            make sim TB=… TC=…
-│       ├── tools/              questa.mk (chính), verilator.mk (CI)
-│       ├── regress/            *.list: mỗi dòng "<TB> <TC> [BIẾN=…]"
-│       ├── scripts/run_regress.py
-│       └── out/                (gitignore) log, waveform của từng lượt chạy
-├── syn/vivado/synth.tcl        synth OOC và schematic bằng Vivado
-├── sw/include/                 header C cho driver bare-metal (register map)
-└── .github/                    CI (lint), CODEOWNERS
+│   ├── rtl/
+│   │   ├── pkg/                        gemm_pkg.sv, pkg.f
+│   │   ├── common/                     gemm_reset_sync.sv, common.f
+│   │   ├── <module>/                   RTL module con và <module>.f
+│   │   └── top/                        gemm_accel_top.sv, top.f
+│   ├── tb/
+│   │   ├── common/                     BFM/task/package mô phỏng dùng chung
+│   │   ├── unit/
+│   │   │   ├── reset_sync/             harness mẫu, .f, default_tc/tc.sv
+│   │   │   └── <module>/               tb_<module>.sv và filelist cùng tên
+│   │   ├── integ/                      harness tích hợp vài khối
+│   │   └── top/                        harness toàn accelerator
+│   ├── tc/
+│   │   ├── unit/
+│   │   │   ├── reset_sync/
+│   │   │   │   ├── TC_RST_001/tc.sv     directed TC
+│   │   │   │   ├── TC_RST_002/tc.sv     directed TC
+│   │   │   │   ├── random_s101/         stim.txt + meta.json, không có tc.sv
+│   │   │   │   └── random_s102/         dữ liệu Python mẫu đã commit
+│   │   │   └── <module>/<TC_ID>/
+│   │   ├── integ/<TC_ID>/
+│   │   └── top/<TC_ID>/
+│   └── sim/
+│       ├── Makefile                    chọn TB/TC và backend
+│       ├── tools/                      questa.mk (mặc định), verilator.mk
+│       ├── regress/
+│       │   ├── reset_sync/             pat.list (directed), random.list (Python)
+│       │   ├── <module>/pat.list        danh sách riêng từng unit
+│       │   ├── unit.list               danh sách tổng, hiện chứa reset mẫu
+│       │   ├── smoke.list              bộ ngắn, hiện chứa reset mẫu
+│       │   ├── integ.list              chưa có test
+│       │   └── top.list                chưa có test
+│       ├── scripts/run_regress.py      chạy list, lưu và đọc lại báo cáo
+│       └── out/                        build/log/wave/report (gitignore)
+├── Makefile                            đầy đủ lệnh, tham số và ví dụ: make help
+├── syn/vivado/synth.tcl
+├── sw/include/gemm_regs.h
+└── .github/                            CI lint và CODEOWNERS
 ```
 
-## Bắt đầu
+## Bắt đầu với ví dụ chạy được
+
+Từ gốc repo:
 
 ```bash
-git clone <url> gemm-accel && cd gemm-accel
 make help
-make lint                                       # Verilator lint toàn bộ RTL, 3 cấu hình
-make sim  TB=tb_gemm_vpu TC=unit/vpu/basic      # QuestaSim (mặc định)
-make gui  TB=tb_gemm_vpu TC=unit/vpu/basic      # Questa GUI, tự add wave
-make regress LIST=unit SEEDS=1,2,3
-make synth     TOP=gemm_vpu GENERICS="P=4"      # Vivado: báo cáo ở syn/out/gemm_vpu/
-make schematic TOP=gemm_systolic_array          # Vivado GUI: schematic RTL
+make lint LINT_F=src/rtl/common/common.f LINT_TOP=gemm_reset_sync
+make sim SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_001
+make regress SIM=verilator LIST=reset_sync/pat
+make regress SIM=verilator LIST=reset_sync/random SEEDS=7,8
 ```
 
-Công cụ: **QuestaSim** (mô phỏng), **Vivado** (synth, schematic), **Python 3** (mô hình, sinh testcase), Verilator 5.020 (lint, mô phỏng với `SIM=verilator`, CI), XeLaTeX (build lại spec).
+Questa vẫn là simulator mặc định: bỏ `SIM=verilator` nếu máy dùng Questa. Module mà người dùng gọi là sync_rst_n hiện có tên **`gemm_reset_sync`**, output **`rst_n_sync`**; ví dụ kiểm tra chính RTL đó, không đổi tên/port.
+
+RTL sáu khối GEMM chính vẫn là stub; các harness khác chưa được viết. Lệnh reset mẫu chạy được, còn lệnh register file/VPU/DMA cần người phụ trách thêm TB/TC và điền pat.list. Các list unit chưa có test để trống có chủ đích; chạy list rỗng sẽ báo lỗi.
 
 ## Phiên bản công cụ đề xuất cho nhóm
 
@@ -95,94 +114,228 @@ Nếu máy có nhiều compiler, kiểm tra `g++` mặc định có tương thí
 
 CI hiện dùng Ubuntu 24.04 và cài Verilator bằng apt nhưng chưa pin phiên bản trong workflow. Trước khi đổi compiler/Verilator, chạy lại `make lint` và các regression đã có. Lưu phiên bản tool, data seed và simulation seed khi báo lỗi.
 
-## Quy ước
+## Quy ước file nguồn và liên kết TB/TC
 
-**RTL**
-- Port của `gemm_accel_top` theo spec hệ thống mục 6 — không ai được sửa.
-- Port của 6 module chính đã khớp spec module và đã nối trong top. File hiện là **stub** (mọi output bằng 0). Người phụ trách viết module con, thay stub, giữ nguyên port. Muốn đổi port nội bộ thì sửa spec module trong **cùng Pull Request**.
-- Mỗi file `.sv` mới phải được thêm vào `<module>.f` của module đó (module con trước, module chính cuối). Filelist dùng `-F`, đường dẫn tương đối theo vị trí file `.f`.
-- Hằng số dùng ở hơn một module khai báo trong `gemm_pkg.sv`, một lần (ví dụ `VPU_LATENCY`).
-- Tên port: `i_*` vào, `o_*` ra; reset `rst_n` bất đồng bộ tích cực thấp; clock `clk`.
+| Thành phần | Đặt ở đâu | Ghi vào file nào |
+|---|---|---|
+| Module chính và module con | `src/rtl/<module>/<tên_module>.sv` | `<module>.f`, module con trước module chính |
+| RTL chung | `src/rtl/common/` | `common.f` |
+| Kiểu/hằng số chung | `src/rtl/pkg/gemm_pkg.sv` | `pkg.f`, compile trước nơi dùng |
+| Harness unit | `src/tb/unit/<module>/tb_<tên>.sv` | `tb_<tên>.f` cùng thư mục |
+| Driver/checker/BFM chung | `src/tb/common/` | Filelist TB cần sử dụng; không đưa vào RTL synth |
+| Harness integration/top | `src/tb/integ/`, `src/tb/top/` | Filelist cạnh TB |
+| Directed TC | `src/tc/<cấp>/<module hoặc TC_ID>/.../tc.sv` | Không compile riêng, TB include qua Makefile |
+| TC dữ liệu | Thư mục TC không có `tc.sv` | TB dùng `default_tc/tc.sv` đọc file qua TC_DIR |
+| Generator | `model/gen/` | Sinh dữ liệu vào `src/tc/`, không ghi vào thư mục TB |
+| Vplan | `docs/verification/<module>_vplan.md` | TC ID khớp ID trong checklist |
+| Pattern list | `src/sim/regress/<module>/pat.list` | Liệt kê các TB/TC muốn chạy |
 
-**Testbench và testcase**
-- `tb` là harness dùng chung: DUT, clock/reset, BFM, task API, monitor và scoreboard. Testcase là `tc.sv` chứa task `run_tc()` hoặc dữ liệu do Python sinh.
-- TB đặt dòng `` `include "tc.sv" `` trong module và gọi `run_tc()`. Nếu thư mục TC có `tc.sv`, Makefile chọn nó và build riêng; nếu không, dùng `<thư mục tb>/default_tc/tc.sv` và build chung cho các TC dữ liệu.
-- Không đặt `tc.sv` ngay cạnh TB, không khai báo module/DUT trong `tc.sv` và không thêm nó như source riêng vào filelist. Thêm pattern dùng API sẵn có không cần sửa TB; hành vi mới có thể cần bổ sung API/checker.
-- tb nhận testcase qua plusarg `+TC_DIR=<thư mục>` (Makefile tự truyền) và `+SEED=<n>`.
-- tb kết thúc bằng đúng **một dòng** `TEST PASSED (...)` hoặc `TEST FAILED: ...`; script regress chỉ đọc dòng này.
-- Filelist của tb nằm cạnh tb, cùng tên: `src/tb/**/tb_<x>.f`.
-- Expected của mọi testcase sinh từ `model/`, không viết tay.
+**Filelist compile và pattern list khác nhau:** `.f` liệt kê source/tùy chọn biên dịch; `pat.list` liệt kê testcase để runner lần lượt gọi mô phỏng. Không đưa toàn bộ `tc.sv` vào `.f`, vì mỗi TC cùng định nghĩa `run_tc()`.
 
-**Git**
-- `main` được bảo vệ: chỉ merge qua Pull Request, CI phải xanh, có ít nhất một người review.
-- Nhánh: `feat/<module>-<việc>`, `fix/<module>-<việc>`, `docs/<việc>`.
-- Không commit thư mục `out/`, waveform, file tạm của Questa/Vivado (đã có `.gitignore`).
-
-## Tổ chức testcase SV và dữ liệu Python
-
-Questa là simulator mặc định. Cùng harness và testcase có thể chạy bằng Verilator khi thêm `SIM=verilator`. Dùng directed test theo vplan và random bổ sung; không bắt buộc UVM. Expected tính toán vẫn lấy từ model Python chung.
+Ví dụ thực tế `src/tb/unit/reset_sync/tb_gemm_reset_sync.f`:
 
 ```text
-src/tb/unit/vpu/
-├── tb_gemm_vpu.sv
-├── tb_gemm_vpu.f
-└── default_tc/tc.sv             # run_tc() đọc dữ liệu từ TC_DIR
-src/tc/unit/vpu/
-├── basic/tc.sv                  # run_tc() viết riêng bằng SV
-└── random_s7/                   # không có tc.sv → dùng default_tc
-    ├── stim.hex
-    └── expected.hex
+-F ../../../rtl/common/common.f
+tb_gemm_reset_sync.sv
 ```
 
-Trong module `tb_gemm_vpu`, khai báo API, biến `tc_dir`, seed và scoreboard, sau đó include testcase:
+Đường dẫn trong filelist dùng `-F` tính từ vị trí file `.f` đó. Package phải xuất hiện trước nơi dùng và không compile lặp qua nhiều filelist. Giữ nguyên port top theo spec hệ thống; thay đổi port nội bộ phải cập nhật spec module cùng PR.
+
+### Directed TC viết tay theo vplan
+
+Harness sở hữu DUT, clock/reset, task API, checker, bộ đếm lỗi, timeout và kết thúc test. File TC chỉ định nghĩa `run_tc()` trong scope của harness, không tạo module hoặc `initial` riêng:
 
 ```systemverilog
-// Bên trong module TB; các task này do người viết harness hiện thực.
-`include "tc.sv"
-initial begin
-  if (!$value$plusargs("TC_DIR=%s", tc_dir))
-    $fatal(1, "TEST FAILED: thiếu TC_DIR");
-  if (!$value$plusargs("SEED=%d", seed)) seed = 1;
-  do_reset();
-  run_tc();
-  drain_and_check(); // đợi đủ output, kiểm scoreboard trước khi báo kết quả
-  finish_test();     // một dòng TEST PASSED hoặc TEST FAILED, rồi kết thúc
-end
+// src/tc/unit/reset_sync/TC_RST_001/tc.sv
+task automatic run_tc();
+  assert_reset();
+  hold_reset(2);
+  release_reset();
+endtask
 ```
 
-Trong `basic/tc.sv` chỉ định nghĩa `task automatic run_tc(); ... endtask`; gọi thẳng các task API như `set_cfg`, `send_row`, `request_soft_clear` của harness. Driver/monitor phải chạy đồng thời khi giao tiếp yêu cầu; harness cần timeout để phát hiện treo. Bản `default_tc/tc.sv` cũng định nghĩa `run_tc()`, nhưng đọc file tại `tc_dir` và dùng cùng API/checker. Format file do TB và generator thống nhất, không tự động được Makefile đọc.
+Trong harness có `` `include "tc.sv" `` và `initial` gọi `run_tc()`. Makefile ưu tiên `<TC_DIR>/tc.sv`; nếu không có, chọn `<thư mục TB>/default_tc/tc.sv`. Không đặt file `tc.sv` ngay cạnh TB để tránh compiler chọn nhầm thay vì include path đã chọn.
 
-RTL riêng của khối đặt trong `src/rtl/<module>/`, thêm vào `<module>.f`, package trước file dùng nó. TB unit đặt trong `src/tb/unit/<module>/`, BFM dùng chung ở `src/tb/common/`, integration ở `src/tb/integ/`, top ở `src/tb/top/`. Ví dụ `src/tb/unit/vpu/tb_gemm_vpu.f`:
+Ví dụ reset có các task đơn giản `assert_reset`, `hold_reset`, `release_reset`, `check_reset`. Driver đổi input ngoài posedge, checker sample sau khi nonblocking update hoàn tất. TC thứ hai minh họa reassert và xung reset ngắn hoàn toàn giữa hai cạnh lên. Xem [vplan reset](docs/verification/reset_sync_vplan.md), [harness](src/tb/unit/reset_sync/tb_gemm_reset_sync.sv) và [TC mẫu](src/tc/unit/reset_sync/TC_RST_001/tc.sv).
+
+Với register file, người phụ trách áp dụng cùng cấu trúc: task `axi_lite_write`, `axi_lite_read_check`, check START/snapshot; mỗi TC ID tương ứng item vplan. Driver và monitor chạy đồng thời khi giao thức yêu cầu. Directed test được phép dùng expected theo spec/vplan hoặc reference model SV của harness; dữ liệu GEMM/VPU và random tính toán dùng golden Python chung trong `model/`.
+
+Log mẫu (rút gọn):
 
 ```text
--F ../../../rtl/pkg/pkg.f
--F ../../../rtl/vpu/vpu.f
-tb_gemm_vpu.sv
+[TC] TC_RST_001
+[t =    12 ns] [assert                  ] rst_n=0 | rst_n_sync exp=0 act=0 | PASS
+[t =    16 ns] [hold                    ] rst_n=0 | rst_n_sync exp=0 act=0 | PASS
+...
+[t =    46 ns] [release: posedge 2      ] rst_n=1 | rst_n_sync exp=1 act=1 | PASS
+TEST PASSED (TC_RST_001)
 ```
 
-Filelist dùng `-F`: đường dẫn tương đối theo file `.f` chứa dòng đó. Include path tới `tc.sv` được backend truyền từ Makefile; không hardcode một TC vào filelist.
+Log check ưu tiên `[t = ...] [action/checkpoint] <input>=... | <output> exp=... act=... | PASS/FAIL`; TC_ID in một lần ở đầu. Thời điểm là lúc capture output; action/checkpoint ghi điều kiện hoặc pha đang kiểm tra, không nhất thiết input đổi ngay lúc đó. Mỗi dòng phải ghi tên output và input/trạng thái cần thiết để khoanh vùng lỗi. Với nhiều output, in từng output một dòng tại cùng checkpoint. Hạn chế mô tả hành động bằng chữ; chỉ thêm ngữ cảnh ngắn khi hành vi phức tạp cần debug. Regression in TC_ID trước mỗi lượt, kết quả ngắn và bảng tổng hợp; chi tiết check nằm trong log từng lượt.
 
-Các lệnh sau yêu cầu đã hiện thực TB/TC; repo hiện mới có các thư mục trống:
+Chỉ một kết luận `TEST PASSED (...)` hoặc `TEST FAILED: ...` từ TB sau khi mọi check hoàn tất; lỗi phải trả mã thoát khác 0. Watchdog in `TEST FAILED: TIMEOUT ...`. Backend có thể nhắc lại kết luận trong stdout; runner ưu tiên mọi FAIL và không suy PASS từ dòng check riêng lẻ. Test chủ động inject lỗi DUT vẫn PASS nếu xử lý lỗi đúng spec. Không báo PASS nếu chưa có check.
+
+### TC dữ liệu do Python sinh
+
+Generator mẫu thực tế `model/gen/gen_reset_sync_tc.py` sinh lịch reset, mỗi dòng `stim.txt` là hai số thập phân `hold_cycles release_delay_ns`. `default_tc/tc.sv` đọc file, kiểm format rồi gọi lại task API của harness. Expected reset là hành vi RST-01 do checker kiểm trực tiếp; ví dụ này không cần file expected số học.
 
 ```bash
-# Từ gốc repo: mặc định Questa
-make sim TB=tb_gemm_vpu TC=unit/vpu/basic
-make gui TB=tb_gemm_vpu TC=unit/vpu/basic
-make -C src/sim comp TB=tb_gemm_vpu TC=unit/vpu/basic
+# Tạo TC random_s201 và random_s202; không ghi đè thư mục đã tồn tại
+make gen-tc GEN=model/gen/gen_reset_sync_tc.py GEN_ARGS="--seed 201 --count 2 --vectors 4"
 
-# Máy chỉ có Verilator
-make sim SIM=verilator TB=tb_gemm_vpu TC=unit/vpu/basic SEED=7
-make sim SIM=verilator TB=tb_gemm_vpu TC=unit/vpu/random_s7 WAVES=1
-make regress SIM=verilator LIST=unit SEEDS=1,2,3
+# Chạy một TC Python vừa sinh
+make sim SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/random_s201 SEED=7
 ```
 
-`PARAMS="P=4"` đặt parameter của **TB**, TB phải truyền xuống DUT. Để có FST, TB cần `$dumpfile("waves.fst")` và `$dumpvars(0, tb_gemm_vpu)` dưới `` `ifdef WAVES ``. Verilator cần compiler C++ hỗ trợ timing/coroutine phù hợp với phiên bản đã cài.
+Data seed `--seed 201` quyết định nội dung file; simulation seed `SEED=7` quyết định random mà TB/BFM sử dụng. TB reset mẫu không random runtime, nên đổi SEED không đổi lịch stimulus. Với AXI có thể random stall theo simulation seed. Generator dùng `random.Random(data_seed)`, lưu `meta.json`; giữ file đầu vào và seed khi có lỗi. Chạy `make models` không tự sinh TC và không chạy RTL.
 
-Build ở `src/sim/out/<sim>/<TB><PTAG>/build_<TCTAG>/` nếu TC có SV riêng, hoặc `build_default/` nếu dùng default. Log/wave ở `.../<TB><PTAG>/run/<TCTAG>_s<seed>/`; TCTAG thay `/` trong TC bằng `__`, PTAG ghi các PARAMS. Mỗi lệnh sim vẫn gọi compile; các TC dữ liệu dùng chung đường dẫn build. Không chạy đồng thời các lượt dùng cùng thư mục build/run.
+Với array/VPU, generator gọi `gemm_golden.gemm/post` hoặc model module, ghi input/expected và format cấu hình được TB thống nhất. TB dữ liệu chỉ đọc và drive/check; Makefile không tự hiểu `.hex` hay JSON. Random cần ràng buộc theo spec, không thay thế directed test reset/biên/lỗi trong vplan.
 
-Python generator đặt ở `model/gen/`, sinh dữ liệu vào `src/tc/`. Generator phải dùng `random.Random(data_seed)`, ghi seed/config và gọi golden trong `model/` để tính expected. Data seed quyết định dữ liệu file; `SEED` của mô phỏng chỉ đổi random do TB/BFM thực sự sử dụng (ví dụ stall), không tự sinh lại file. Đưa từng thư mục dữ liệu vào regression list để chạy nhiều data seed. Lưu file gây lỗi để tái hiện.
+## Các lệnh compile, sim, GUI và lint
 
-Ưu tiên task/function, `$readmemh`, `$fscanf`, `$urandom_range` và checker đơn giản để dễ dùng chung tool. Chốt phiên bản Verilator và thử các SVA/tính năng SV cần dùng; không mặc định mọi bản hỗ trợ đầy đủ UVM, class constraint hay covergroup. Với random phức tạp, sinh trước bằng Python. Random không thay thế directed test biên/reset/lỗi trong vplan.
+`make help` hoặc phần comment đầu Makefile gốc liệt kê toàn bộ cú pháp và ví dụ. Các tùy chọn chung:
+
+| Tham số | Ý nghĩa |
+|---|---|
+| `TB` | Tên module TB, cũng là tên file `.f` không đuôi; phải duy nhất trong src/tb |
+| `TC` | Đường dẫn dưới src/tc; chọn tc.sv riêng hoặc dữ liệu cho default_tc |
+| `SIM` | questa mặc định, hoặc verilator |
+| `SEED` / `SEEDS` | Một simulation seed / danh sách seed trong regression; số nguyên dương |
+| `PARAMS="NAME=value ..."` | Parameter **của TB**, TB truyền xuống DUT; reset mẫu có CLK_HALF_NS >= 5 |
+| `PLUSARGS="+NAME=value ..."` | Runtime option, chỉ có tác dụng nếu TB/BFM đọc |
+| `DEFINES="+define+NAME ..."` | Macro compile |
+| `WAVES=1` | Bật FST cho Verilator, TB phải có khối dump dưới macro WAVES |
+
+```bash
+# Chỉ biên dịch directed TC
+make comp SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_001
+
+# Directed TC bằng Questa mặc định / Verilator
+make sim TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_001
+make sim SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_002
+
+# Cùng harness, một TC Python có sẵn trong repo
+make sim SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/random_s101 SEED=7
+
+# Parameter compile-time của harness
+make sim SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_001 PARAMS="CLK_HALF_NS=10"
+
+# GUI Questa: directed / Python; add wave và chạy
+make gui TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_001
+make gui TB=tb_gemm_reset_sync TC=unit/reset_sync/random_s101
+
+# Verilator không có GUI: ghi FST rồi mở GTKWave
+make sim SIM=verilator TB=tb_gemm_reset_sync TC=unit/reset_sync/TC_RST_001 WAVES=1
+gtkwave src/sim/out/verilator/tb_gemm_reset_sync/run/unit__reset_sync__TC_RST_001_s1/waves.fst
+
+# Lint toàn bộ RTL theo 3 cấu hình hiện tại; không chạy TC
+make lint
+# Lint một khối: filelist phải chứa đủ dependencies/package nếu có
+make lint LINT_F=src/rtl/common/common.f LINT_TOP=gemm_reset_sync
+make lint LINT_F=src/rtl/vpu/vpu.f LINT_TOP=gemm_vpu LINT_PARAMS="P=4"
+```
+
+`make comp TB=tb_gemm_reset_sync` có thể bỏ TC để compile default reader. `make sim` luôn cần TC hợp lệ. Lint luôn dùng Verilator, không phụ thuộc SIM.
+
+## Pattern list, regression và báo cáo
+
+Format `pat.list` (hoặc bất cứ file list nào):
+
+```text
+# <TB> <TC> [NAME=value ...]
+tb_gemm_reset_sync unit/reset_sync/TC_RST_001
+tb_gemm_reset_sync unit/reset_sync/TC_RST_002 PARAMS="CLK_HALF_NS=10"
+```
+
+Hỗ trợ dòng trống, comment `#` (kể cả cuối dòng) và dòng comment bắt đầu `//`. Tùy chọn từng dòng ghi đè tùy chọn chung; TB/TC/SIM/SEED dùng các trường/tham số riêng, không ghi đè bằng assignment cuối dòng. Cùng format cho unit, integ, top, directed và Python. Có thể trộn các loại trong một list.
+
+```bash
+# Toàn bộ directed TC của unit reset; Questa mặc định
+make regress LIST=reset_sync/pat
+# Trên máy dùng Verilator
+make regress SIM=verilator LIST=reset_sync/pat
+
+# Regression Python có sẵn: 2 data seed x 2 simulation seed = 4 lượt
+make regress SIM=verilator LIST=reset_sync/random SEEDS=7,8 TIMEOUT=300
+
+# Dùng một file danh sách bất kỳ; PATLIST ưu tiên hơn LIST
+make regress SIM=verilator PATLIST=src/sim/regress/reset_sync/pat.list
+
+# Bộ tổng unit / smoke; hiện chỉ chứa 2 directed TC reset
+make regress SIM=verilator LIST=unit
+make regress SIM=verilator LIST=smoke
+# Integration/top: điền test vào list tương ứng trước khi chạy
+make regress LIST=integ
+make regress LIST=top
+```
+
+Để regress các TC mới sinh `random_s201/202`, thêm hai dòng tương ứng vào list Python rồi dùng cùng lệnh regress. Không cần generator riêng cho regression. Khi cần truyền WAVES/PARAMS/PLUSARGS/DEFINES chung, đặt trên lệnh `make regress` như trên `make sim`.
+
+Mỗi đợt regression tạo thư mục độc lập và in đường dẫn:
+
+```text
+src/sim/out/regress/<run_id>/
+├── pat.list                        bản chụp danh sách đã chạy
+├── results.json                    từng job, seed, command, status, log, thời gian
+├── report.txt                      bảng tổng hợp dễ đọc
+└── logs/0001.log ...                stdout/stderr compile + sim của từng lượt
+```
+
+Ví dụ bảng:
+
+```text
+PATTERN               | SIM    | SEED | RESULT
+----------------------+--------+------+-------
+reset_sync-TC_RST_001  | questa | 1    | PASS
+reset_sync-TC_RST_002  | questa | 1    | PASS
+TOTAL=2  PASS=2  FAIL=0  ERROR=0  TIMEOUT=0  NOT_RUN=0
+```
+
+- PASS: simulator/build thành công, có kết luận PASS và không có FAIL.
+- FAIL: checker báo TEST FAILED; ERROR: compile/simulator lỗi hoặc thiếu kết luận.
+- TIMEOUT: watchdog TB hoặc runner quá TIMEOUT giây (gồm cả compile).
+- NOT_RUN: lượt chưa được chạy nếu đợt bị ngắt; runner lưu trạng thái ban đầu trước khi chạy.
+
+Runner tiếp tục sau lỗi từng TC; trả mã thoát khác 0 khi có kết quả không PASS. List rỗng/sai format bị từ chối. Log regression riêng tránh dùng nhầm log cũ; log đơn lẻ cũng được backend lưu như bên dưới.
+
+In lại báo cáo, **không mô phỏng lại** (thay `<run_id>` bằng đường dẫn runner đã in):
+
+```bash
+make report RUN=src/sim/out/regress/<run_id>
+# Hoặc gọi trực tiếp Python
+python3 src/sim/scripts/run_regress.py --report src/sim/out/regress/<run_id>/results.json
+```
+
+Báo cáo có test không PASS cũng trả mã thoát khác 0. Chạy trực tiếp runner:
+
+```bash
+python3 src/sim/scripts/run_regress.py src/sim/regress/reset_sync/pat.list --sim verilator --seeds 1 --timeout 300
+```
+
+### Build và log một TC
+
+```text
+src/sim/out/<sim>/<TB><PTAG>/
+├── build_unit__reset_sync__TC_RST_001/  TC có SV riêng
+├── build_default/                     các TC dữ liệu dùng chung reader
+└── run/unit__reset_sync__TC_RST_001_s1/
+    ├── sim.log
+    └── waves.fst hoặc vsim.wlf
+```
+
+PTAG biểu diễn PARAMS, dấu `/` trong TC đổi thành `__`. Mỗi sim gọi comp; chia sẻ đường dẫn build không có nghĩa đã cache mọi cấu hình. Không chạy đồng thời các lệnh dùng cùng build/run. Lưu report trước `make clean`, vì clean xóa cả src/sim/out.
+
+## Các lệnh khác và làm việc nhóm
+
+```bash
+make synth TOP=gemm_vpu GENERICS="P=4"
+make schematic TOP=gemm_systolic_array
+make models
+make docs
+make clean
+```
+
+Không commit out/wave/build. Commit generator và các vector regression cần tái hiện. Nhánh `feat/<module>-<việc>`, `fix/<module>-<việc>`, `docs/<việc>`; merge qua PR/review theo quy định nhóm. Không copy checker/clock/DUT vào từng TC; thêm hành vi mới bằng API trong harness rồi dùng lại ở các testcase.
 
 ## Phân công
 
