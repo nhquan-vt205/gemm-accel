@@ -24,10 +24,15 @@ DEFINES  ?=                 # macro thêm, ví dụ "+define+DEBUG"
 ROOT  := $(abspath ../..)
 TBF   := $(firstword $(shell find $(ROOT)/src/tb -name '$(TB).f' 2>/dev/null))
 TCDIR := $(ROOT)/src/tc/$(TC)
+TBDIR := $(patsubst %/,%,$(dir $(TBF)))
+TC_SV := $(if $(strip $(TC)),$(wildcard $(TCDIR)/tc.sv))
+INCDIR := $(if $(TC_SV),$(TCDIR),$(TBDIR)/default_tc)
+TCTAG := $(subst /,__,$(strip $(TC)))
 space := $(subst ,, )
 PTAG  := $(if $(strip $(PARAMS)),_$(subst $(space),_,$(subst =,-,$(strip $(PARAMS)))))
-OUT   := $(ROOT)/src/sim/out/$(SIM)/$(TB)$(PTAG)
-RUN   := $(OUT)/$(subst /,__,$(TC))_s$(SEED)
+OUTTB := $(ROOT)/src/sim/out/$(SIM)/$(TB)$(PTAG)
+BUILD := $(OUTTB)/build_$(if $(TC_SV),$(TCTAG),default)
+RUN   := $(OUTTB)/run/$(TCTAG)_s$(SEED)
 GFLAGS := $(addprefix -G,$(PARAMS))
 
 .PHONY: sim comp gui clean check-args
@@ -35,6 +40,9 @@ GFLAGS := $(addprefix -G,$(PARAMS))
 check-args:
 	@test -n "$(TB)"  || (echo "thiếu TB=<tên tb>"; exit 1)
 	@test -n "$(TBF)" || (echo "không tìm thấy $(TB).f trong src/tb"; exit 1)
+
+	@test -f "$(INCDIR)/tc.sv" || (echo "không có tc.sv: tạo $(TCDIR)/tc.sv hoặc $(TBDIR)/default_tc/tc.sv"; exit 1)
+	@echo "[sim] $(SIM) TB=$(TB) TC=$(TC) tc.sv=$(INCDIR)/tc.sv"
 
 include tools/$(SIM).mk
 
