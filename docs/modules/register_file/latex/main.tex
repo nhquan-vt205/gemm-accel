@@ -1,138 +1,211 @@
-% !TEX program = xelatex
-% Spec module gemm_register_file v1.0 (full option)
 \documentclass[10pt,a4paper]{article}
 \newcommand{\ModHeader}{gemm\_register\_file}
-\input{preamble}
-
+\input{../../../common/timer_style.tex}
 \begin{document}
-\makecover{gemm\_register\_file}{Register File và AXI4-Lite slave}{Port list, giao thức MMIO, thanh ghi, chấp nhận tác vụ, trạng thái, bộ đếm}{%
-\textbf{Module} & \sig{gemm_register_file} (instance \sig{u_regfile} trong \sig{gemm_accel_top}) \\
-\textbf{Module con} & \sig{gemm_axil_slave}, \sig{gemm_rf_regs}, \sig{gemm_rf_perf} \\
-\textbf{Cấu hình} & Bản đầy đủ: \sig{DESC_PTR}, \sig{ERR_DESC_ADDR}, \sig{DESC_DONE_CNT} có hiệu lực (\sig{HAS_CHAIN} = 1). Với \sig{HAS_CHAIN} = 0 các offset này đọc 0, ghi bị bỏ qua \\
-\textbf{Tuân theo} & Spec hệ thống v1.0: mục 3 (REG-01 … REG-12, TSK-01 … TSK-09, bảng 3-1 … 3-3), mục 4.5 (RST-*), mục 5.1 (AXL-01 … AXL-07), mục 6 (port \sig{s_axi_*}), mục 7 (BS-01, DSC-07, DSC-08, PP-10) \\
-\textbf{Kèm theo} & \sig{gemm_regfile_model.py}: mô hình cycle-accurate với master AXI4-Lite ngẫu nhiên và FSM giả lập \\}
+{\Large\bfseries ĐẶC TẢ THIẾT KẾ gemm\_register\_file}\par
+\tableofcontents
+\clearpage
+\section{Tổng quan}
+\subsection{Tính năng chính}\label{sec:1}
 
-% ===================== 1 =====================
-\section{Chức năng}\label{sec:1}
 
-\begin{keypoint}
 Register File là đầu mối duy nhất giữa CPU và accelerator. Nó trả lời mọi truy cập MMIO trên AXI4-Lite, lưu các thanh ghi cấu hình, quyết định chấp nhận START hay START\_CHAIN, chụp cấu hình đúng lúc chấp nhận, giữ cờ trạng thái DONE/ERROR, và đếm chu kỳ hiệu năng. Nó không biết gì về các pha: Main FSM báo lại khi tác vụ xong.
-\end{keypoint}
 
-\begin{reqtable}{Chức năng}{tab:1-1}
-RF-F01 & Register map, quyền truy cập và giá trị reset đúng bảng 3-1 … 3-3 spec hệ thống (REG-01) \\
-RF-F02 & Chấp nhận tác vụ theo TSK-01 … TSK-03; giữ STATUS theo TSK-04 … TSK-07, REG-06 \\
-RF-F03 & Bản chụp gồm 8 thanh ghi của REG-11 và \sig{DESC_PTR}, đủ 32 bit, xuất cho FSM và giữ nguyên tới lần chấp nhận kế tiếp \\
-RF-F04 & \sig{PERF_*} theo REG-10. Ở chế độ ping-pong tổng ba bộ đếm thành phần được phép lớn hơn \sig{PERF_TOTAL} (PP-10) \\
-RF-F05 & Luôn trả OKAY; không bao giờ treo bus (AXL-04) \\
-\end{reqtable}
+
+
+\paragraph{Chức năng}\label{tab:1-1}
+\begin{itemize}
+\item Register map và bố trí bit là giao diện phần mềm được định nghĩa tại mục Đặc tả thanh ghi của spec tổng. Module này hiện thực giải mã, ghi byte, đọc lại và cập nhật trạng thái của giao diện đó
+\item Chỉ nhận START/START\_CHAIN khi rảnh. Chụp cấu hình và báo start trước khi hoàn tất phản hồi ghi AXI. DONE/ERROR giữ đến tác vụ mới hoặc reset; MODE giữ chế độ gần nhất và ERR\_CODE bằng 0 khi không lỗi.
+\item Chụp đủ 32 bit của \sig{MATRIX_DIM}, ba thanh ghi địa chỉ cơ sở, \sig{POST_CTRL}, \sig{BIAS_ADDR}, \sig{QUANT_M0}, \sig{QUANT_SHIFT} và \sig{DESC_PTR} khi nhận tác vụ; giữ nguyên tới lần chấp nhận kế tiếp.
+\item Các bộ đếm PERF xóa khi nhận tác vụ, đếm khi BUSY, bão hòa tại 0xFFFF\_FFFF và giữ sau kết thúc. Khi các pha chồng nhau, tổng các bộ đếm pha có thể lớn hơn tổng thời gian tác vụ.
+\item Luôn trả OKAY; không bao giờ treo bus
+\end{itemize}
+
 
 % ===================== 2 =====================
-\section{Tham số}\label{sec:2}
-\begin{spectable}{L{0.22}L{0.14}L{0.64}}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
-\sig{P} & 8 & Ghi vào \sig{HW_CONFIG[7:0]} \\
-\sig{HAS_CHAIN} & 1 & \sig{HW_CONFIG[16]}; bật các offset 0x40 … 0x48 \\
-\sig{HAS_PINGPONG} & 1 & \sig{HW_CONFIG[17]} \\
+\subsection{Tham số}\label{sec:2}
+\begin{spectable}{|L{0.22}|L{0.14}|L{0.64}|}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
+\sig{P} & 8 & Ghi vào \sig{HW_CONFIG[7:0]} \\\hline
+
+\sig{HAS_CHAIN} & 1 & \sig{HW_CONFIG[16]}; bật các offset 0x40 … 0x48 \\\hline
+
+\sig{HAS_PINGPONG} & 1 & \sig{HW_CONFIG[17]} \\\hline
+
 \end{spectable}
 
 % ===================== 3 =====================
-\section{Port list}\label{sec:3}
+\subsection{Tín hiệu giao tiếp}\label{sec:3}
 
-\begin{spectable}{L{0.22}L{0.08}L{0.08}L{0.1}L{0.52}}{Port của \sigc{gemm_register_file}}{tab:3-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Nối với} & \textbf{Mô tả}}
-\sig{clk}, \sig{rst_n}, \sig{i_soft_clr} & 1 × 3 & In & top, FSM & \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{AXI4-Lite slave: 17 port \sigc{s_axi_*} của bảng 6-2 spec hệ thống, nối thẳng từ top}} \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Register File → FSM}} \\
-\sig{o_start_pulse} & 1 & Out & FSM & Xung: một tác vụ vừa được chấp nhận \\
-\sig{o_start_kind} & 2 & Out & FSM & \{START\_CHAIN, START\} của lệnh ghi được chấp nhận \\
-\sig{o_soft_req} & 1 & Out & FSM & Xung: lệnh ghi có SOFT\_RESET = 1 \\
-\sig{o_cfg_dim}, \sig{o_cfg_a_addr}, \sig{o_cfg_b_addr}, \sig{o_cfg_c_addr} & 32 × 4 & Out & FSM & Bản chụp \sig{MATRIX_DIM}, \sig{BASE_ADDR_IN}, \sig{_WEIGHT}, \sig{_OUT} \\
-\sig{o_cfg_post_ctrl}, \sig{o_cfg_bias_addr}, \sig{o_cfg_qm0}, \sig{o_cfg_qshift} & 32 × 4 & Out & FSM & Bản chụp \sig{POST_CTRL}, \sig{BIAS_ADDR}, \sig{QUANT_M0}, \sig{QUANT_SHIFT} \\
-\sig{o_cfg_desc_ptr} & 32 & Out & FSM & Bản chụp \sig{DESC_PTR} (0 khi \sig{HAS_CHAIN} = 0) \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{FSM → Register File}} \\
-\sig{i_soft_busy} & 1 & In & FSM & Đang trong chuỗi soft reset \\
-\sig{i_done_pulse} & 1 & In & FSM & Tác vụ xong thành công \\
-\sig{i_err_pulse}, \sig{i_err_code} & 1, 4 & In & FSM & Tác vụ xong với lỗi \\
-\sig{i_perf_load}, \sig{i_perf_comp}, \sig{i_perf_store} & 1 × 3 & In & FSM & Mức hoạt động của từng loại pha \\
-\sig{i_err_desc_addr}, \sig{i_desc_done_cnt} & 32, 32 & In & FSM & Giá trị đọc của 0x44, 0x48 \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_register_file}}{tab:3-1}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{i_soft_clr} & 1 & Input & Xung xóa đồng bộ dài một chu kỳ do Main FSM phát.\newline Xóa trạng thái điều khiển tại cạnh lên; phạm vi xóa dữ liệu được quy định trong mục Reset. \\\hline
+
+
+
+
+\multicolumn{4}{@{}l}{\textit{Register File → FSM}} \\\hline
+
+\sig{o_start_pulse} & 1 & Output & Xung một chu kỳ báo Register File vừa chấp nhận một tác vụ.\newline Loại lệnh và bản chụp cấu hình hợp lệ cùng chu kỳ. \\\hline
+
+\sig{o_start_kind} & 2 & Output & Loại lệnh được chấp nhận.\newline Bit 0 ứng với START; bit 1 ứng với START\_CHAIN.\newline Giá trị 01: tác vụ đơn; 10: chuỗi; 11: cấu hình lệnh sai. \\\hline
+
+\sig{o_soft_req} & 1 & Output & Xung một chu kỳ yêu cầu Main FSM thực hiện soft reset.\newline Phát khi lệnh ghi CTRL có SOFT\_RESET = 1 và byte 0 được cho phép ghi. \\\hline
+
+\sig{o_cfg_dim} & 32 & Output & Bản chụp đủ 32 bit của MATRIX\_DIM.\newline Bit [7:0]: M; [15:8]: N; [23:16]: K; [31:24]: dự trữ.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+\sig{o_cfg_a_addr} & 32 & Output & Bản chụp đủ 32 bit của BASE\_ADDR\_IN.\newline Địa chỉ byte của ma trận A.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+\sig{o_cfg_b_addr} & 32 & Output & Bản chụp đủ 32 bit của BASE\_ADDR\_WEIGHT.\newline Địa chỉ byte của ma trận B.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+\sig{o_cfg_c_addr} & 32 & Output & Bản chụp đủ 32 bit của BASE\_ADDR\_OUT.\newline Địa chỉ byte vùng kết quả C hoặc Y.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+
+\sig{o_cfg_post_ctrl} & 32 & Output & Bản chụp đủ 32 bit của POST\_CTRL.\newline Bit 0 bật hậu xử lý; bit 1 bật ReLU.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+\sig{o_cfg_bias_addr} & 32 & Output & Bản chụp đủ 32 bit của BIAS\_ADDR.\newline Địa chỉ byte của vector bias.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+\sig{o_cfg_qm0} & 32 & Output & Bản chụp đủ 32 bit của QUANT\_M0.\newline Hệ số nhân lượng tử M0, INT32 có dấu.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+\sig{o_cfg_qshift} & 32 & Output & Bản chụp đủ 32 bit của QUANT\_SHIFT.\newline Bit [4:0] là lượng dịch sh; giữ cả các bit cao để kiểm tra cấu hình.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+
+\sig{o_cfg_desc_ptr} & 32 & Output & Bản chụp đủ 32 bit của DESC\_PTR.\newline Địa chỉ descriptor đầu chuỗi; bằng 0 khi không hỗ trợ chuỗi.\newline Chụp khi chấp nhận tác vụ và giữ nguyên đến lần chấp nhận tiếp theo. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{FSM → Register File}} \\\hline
+
+\sig{i_soft_busy} & 1 & Input & Báo đang xử lý soft reset.\newline Trong khoảng này Register File báo BUSY = 1 và không nhận tác vụ mới. \\\hline
+
+\sig{i_done_pulse} & 1 & Input & Xung một chu kỳ báo toàn bộ tác vụ kết thúc thành công.\newline Register File đặt DONE và xóa BUSY tại cạnh lên; không xuất hiện cùng err pulse. \\\hline
+
+\sig{i_err_pulse} & 1 & Input & Xung một chu kỳ báo toàn bộ tác vụ kết thúc với lỗi.\newline Mã lỗi hợp lệ cùng chu kỳ; Register File đặt ERROR và xóa BUSY tại cạnh lên. \\\hline
+\sig{i_err_code} & 4 & Input & Mã lỗi của tác vụ, được lấy mẫu cùng err pulse.\newline Giá trị 1: cấu hình.\newline Giá trị 2: đọc dữ liệu.\newline Giá trị 3: ghi kết quả; 4: đọc descriptor; 5: tính năng không có. \\\hline
+
+\sig{i_perf_load} & 1 & Input & Báo pha LOAD dữ liệu, không bao gồm FETCH đang hoạt động.\newline Khi tín hiệu bằng 1 và tác vụ đang bận, bộ đếm hiệu năng tương ứng tăng tại cạnh lên. \\\hline
+\sig{i_perf_comp} & 1 & Input & Báo pha COMPUTE đang hoạt động.\newline Khi tín hiệu bằng 1 và tác vụ đang bận, bộ đếm hiệu năng tương ứng tăng tại cạnh lên. \\\hline
+\sig{i_perf_store} & 1 & Input & Báo pha STORE\_C đang hoạt động.\newline Khi tín hiệu bằng 1 và tác vụ đang bận, bộ đếm hiệu năng tương ứng tăng tại cạnh lên. \\\hline
+
+\sig{i_err_desc_addr} & 32 & Input & Địa chỉ descriptor lỗi được cung cấp cho thanh ghi ERR\_DESC\_ADDR tại offset 0x44.\newline Bằng 0 ở chế độ đơn hoặc khi không hỗ trợ chuỗi. \\\hline
+\sig{i_desc_done_cnt} & 32 & Input & Số descriptor đã hoàn tất STORE\_C thành công, cung cấp cho thanh ghi DESC\_DONE\_CNT tại offset 0x48.\newline Bằng 0 ở chế độ đơn hoặc khi không hỗ trợ chuỗi. \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Giao tiếp}{tab:3-2}
-RF-I01 & Mọi port ra (\sig{s_axi_*} ra và \sig{o_*}) lấy từ thanh ghi \\
-RF-I02 & \sig{o_cfg_*} chỉ đổi ở cạnh clock chấp nhận tác vụ; ổn định suốt tác vụ (REG-11) \\
-RF-I03 & \sig{i_done_pulse} và \sig{i_err_pulse} chỉ đến khi BUSY = 1 và không bao giờ cùng chu kỳ (FSM-I05) \\
-\end{reqtable}
+
+\paragraph{Giao tiếp}\label{tab:3-2}
+\begin{itemize}
+\item Mọi port ra (\sig{s_axi_*} ra và \sig{o_*}) lấy từ thanh ghi
+\item \sig{o_cfg_*} chỉ đổi ở cạnh clock chấp nhận tác vụ; ổn định suốt tác vụ
+\item \sig{i_done_pulse} và \sig{i_err_pulse} chỉ đến khi BUSY = 1 và không bao giờ cùng chu kỳ
+\end{itemize}
+
 
 % ===================== 4 =====================
-\section{Vi kiến trúc}\label{sec:4}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=1cm,y=1cm,scale=0.83,transform shape]
-\draw[brand,line width=1pt,rounded corners=3pt,fill=cream] (0,0) rectangle (16.0,5.6);
-\node[anchor=north west,font=\headfont\bfseries\small,text=brand] at (0.1,5.55) {gemm\_register\_file};
-\node[blk,minimum width=3.2cm,minimum height=3.4cm] (ax) at (2.2,2.6) {\textbf{gemm\_axil\_slave}\\[-1pt]\scriptsize thanh ghi giữ AW, W\\[-2pt]\scriptsize wr\_fire, rd\_fire\\[-2pt]\scriptsize B, R có thanh ghi};
-\node[blk,minimum width=4.6cm,minimum height=3.4cm] (rg) at (8.6,2.6) {\textbf{gemm\_rf\_regs}\\[-1pt]\scriptsize thanh ghi R/W · giải mã CTRL\\[-2pt]\scriptsize chấp nhận START · bản chụp\\[-2pt]\scriptsize STATUS · HW\_CONFIG · mux đọc};
-\node[blk,minimum width=2.6cm,minimum height=1.4cm] (pf) at (14.4,3.7) {\textbf{gemm\_rf\_perf}\\[-1pt]\scriptsize 4 × 32 bit, bão hòa};
-\draw[ctl,<->] (-0.9,2.6) node[left,font=\scriptsize,align=right]{s\_axi\_*\\(CPU)} -- (ax.west);
-\draw[ctl] ([yshift=12pt]ax.east) -- node[lbl,above,align=center]{wr\_fire\\addr, data, strb} ([yshift=12pt]rg.west);
-\draw[ctl] ([yshift=-16pt]rg.west) -- node[lbl,below]{rd\_data} ([yshift=-16pt]ax.east);
-\draw[ctl] ([yshift=6pt]rg.east |- pf.west) -- node[lbl,above]{clear, busy} ([yshift=6pt]pf.west);
-\draw[ctl] ([yshift=-6pt]pf.west) -- node[lbl,below]{giá trị} ([yshift=-6pt]rg.east |- pf.west);
-\draw[ctl] (rg.east |- 0,1.5) -- (13.1,1.5) node[right,font=\scriptsize,align=left]{o\_start\_*, o\_soft\_req\\o\_cfg\_* → FSM};
-\draw[ctl] (8.6,-0.6) node[below,font=\scriptsize]{FSM: done, err, perf, soft} -- (rg.south);
-\end{tikzpicture}
-\caption{Cấu trúc bên trong \sigc{gemm_register_file}}\label{fig:4-1}
-\end{figure}
+\subsection{Tín hiệu AXI}
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu AXI}{tab:axi}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{s_axi_awaddr} & 32 & Input & Địa chỉ byte của thanh ghi cần ghi.\newline Chỉ giải mã bit [11:2]; bỏ qua bit [1:0].\newline Hợp lệ cùng AWVALID; giữ ổn định khi chờ bắt tay. \\\hline
 
-\subsection{\texorpdfstring{\sigc{gemm_axil_slave}}{gemm\_axil\_slave}}
-\begin{reqtable}{Giao thức AXI4-Lite}{tab:4-1}
-AXS-01 & Thanh ghi giữ \sig{aw_v}/\sig{aw_addr} và \sig{w_v}/\sig{w_data}/\sig{w_strb}. \sig{s_axi_awready} = ¬\sig{aw_v} ∧ ¬\sig{s_axi_bvalid}; \sig{s_axi_wready} = ¬\sig{w_v} ∧ ¬\sig{s_axi_bvalid}. AW và W được nhận theo thứ tự bất kỳ (AXL-01) \\
-AXS-02 & \sig{wr_fire} = \sig{aw_v} ∧ \sig{w_v} ∧ ¬\sig{s_axi_bvalid}: lệnh ghi có hiệu lực ở cạnh clock cuối chu kỳ đó; cùng cạnh: \sig{aw_v}, \sig{w_v} ← 0, \sig{s_axi_bvalid} ← 1, \sig{s_axi_bresp} = 0 \\
-AXS-03 & \sig{s_axi_bvalid} giữ tới \sig{s_axi_bready} (AXL-02). Tối đa một lệnh ghi đang xử lý (AXL-03) \\
-AXS-04 & \sig{s_axi_arready} = ¬\sig{s_axi_rvalid}. Ở chu kỳ bắt tay AR (\sig{rd_fire}): \sig{s_axi_rdata} ← giá trị đọc (bảng~\ref{tab:5-1}) tính từ trạng thái đầu chu kỳ, \sig{s_axi_rvalid} ← 1; giữ tới \sig{s_axi_rready} \\
-AXS-05 & Chỉ dùng bit địa chỉ [11:2] (AXL-05). Đọc và ghi cùng chu kỳ được phép; đọc trả giá trị trước lệnh ghi \\
-\end{reqtable}
+\sig{s_axi_awvalid} & 1 & Input & Báo địa chỉ và thuộc tính yêu cầu ghi hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi AWREADY = 1. \\\hline
+
+\sig{s_axi_awready} & 1 & Output & Báo bên nhận sẵn sàng nhận địa chỉ ghi.\newline Bắt tay xảy ra tại cạnh lên khi AWVALID và AWREADY cùng bằng 1. \\\hline
+
+\sig{s_axi_wdata} & 32 & Input & Word 32 bit cần ghi.\newline Hợp lệ khi WVALID = 1; giữ nguyên trong lúc chờ WREADY. \\\hline
+
+\sig{s_axi_wstrb} & 4 & Input & Cho phép ghi từng byte của thanh ghi RW.\newline Bit b = 1 cho phép ghi byte b; bit b = 0 giữ byte đó.\newline Các bit lệnh CTRL chỉ có hiệu lực khi bit 0 bằng 1. \\\hline
+
+\sig{s_axi_wvalid} & 1 & Input & Báo dữ liệu ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi WREADY = 1. \\\hline
+
+\sig{s_axi_wready} & 1 & Output & Báo bên nhận sẵn sàng nhận dữ liệu ghi.\newline Giao dịch được nhận tại cạnh lên khi WVALID và WREADY cùng bằng 1. \\\hline
+
+\sig{s_axi_bresp} & 2 & Output & Mã phản hồi ghi.\newline Luôn bằng 2'b00 (OKAY), kể cả truy cập offset dự trữ.\newline Hợp lệ cùng BVALID. \\\hline
+
+\sig{s_axi_bvalid} & 1 & Output & Báo phản hồi ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi BREADY = 1. \\\hline
+
+\sig{s_axi_bready} & 1 & Input & Báo bên nhận sẵn sàng nhận phản hồi ghi.\newline Giao dịch được nhận tại cạnh lên khi BVALID và BREADY cùng bằng 1. \\\hline
+
+\sig{s_axi_araddr} & 32 & Input & Địa chỉ byte của thanh ghi cần đọc.\newline Chỉ giải mã bit [11:2]; bỏ qua bit [1:0].\newline Hợp lệ cùng ARVALID; giữ ổn định khi chờ bắt tay. \\\hline
+
+\sig{s_axi_arvalid} & 1 & Input & Báo địa chỉ và thuộc tính yêu cầu đọc hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi ARREADY = 1. \\\hline
+
+\sig{s_axi_arready} & 1 & Output & Báo bên nhận sẵn sàng nhận địa chỉ đọc.\newline Bắt tay xảy ra tại cạnh lên khi ARVALID và ARREADY cùng bằng 1. \\\hline
+
+\sig{s_axi_rdata} & 32 & Output & Word 32 bit đọc trả về.\newline Hợp lệ khi RVALID = 1; giữ nguyên trong lúc chờ RREADY. \\\hline
+
+\sig{s_axi_rresp} & 2 & Output & Mã phản hồi đọc.\newline Luôn bằng 2'b00 (OKAY), kể cả truy cập offset dự trữ.\newline Hợp lệ cùng RVALID. \\\hline
+
+\sig{s_axi_rvalid} & 1 & Output & Báo dữ liệu đọc hợp lệ.\newline Giữ valid và payload ổn định đến khi RREADY = 1. \\\hline
+
+\sig{s_axi_rready} & 1 & Input & Báo bên nhận sẵn sàng nhận dữ liệu đọc.\newline Giao dịch được nhận tại cạnh lên khi RVALID và RREADY cùng bằng 1. \\\hline
+
+\end{spectable}
+\section{Đặc tả thanh ghi}
+Offset, từng trường bit, quyền truy cập và reset được định nghĩa đầy đủ trong mục Đặc tả thanh ghi của spec tổng. Các thanh ghi RW lưu đủ 32 bit, kể cả bit dự trữ, và ghi theo byte strobe. Các bảng hành vi bên dưới quy định cách module thực hiện giao diện đó.
+\section{Mô tả chức năng}
+\subsection{Tổ chức chức năng}\label{sec:4}
+
+
+
+\subsubsection{\texorpdfstring{\sigc{gemm_axil_slave}}{gemm\_axil\_slave}}
+
+\paragraph{Giao thức AXI4-Lite}\label{tab:4-1}
+\begin{itemize}
+\item Thanh ghi giữ \sig{aw_v}/\sig{aw_addr} và \sig{w_v}/\sig{w_data}/\sig{w_strb}. \sig{s_axi_awready} = ¬\sig{aw_v} ∧ ¬\sig{s_axi_bvalid}; \sig{s_axi_wready} = ¬\sig{w_v} ∧ ¬\sig{s_axi_bvalid}. AW và W được nhận theo thứ tự bất kỳ
+\item \sig{wr_fire} = \sig{aw_v} ∧ \sig{w_v} ∧ ¬\sig{s_axi_bvalid}: lệnh ghi có hiệu lực ở cạnh clock cuối chu kỳ đó; cùng cạnh: \sig{aw_v}, \sig{w_v} ← 0, \sig{s_axi_bvalid} ← 1, \sig{s_axi_bresp} = 0
+\item \sig{s_axi_bvalid} giữ tới \sig{s_axi_bready} . Tối đa một lệnh ghi đang xử lý
+\item \sig{s_axi_arready} = ¬\sig{s_axi_rvalid}. Ở chu kỳ bắt tay AR (\sig{rd_fire}): \sig{s_axi_rdata} ← giá trị đọc  tính từ trạng thái đầu chu kỳ, \sig{s_axi_rvalid} ← 1; giữ tới \sig{s_axi_rready}
+\item Chỉ dùng bit địa chỉ [11:2] . Đọc và ghi cùng chu kỳ được phép; đọc trả giá trị trước lệnh ghi
+\end{itemize}
+
 
 % ===================== 5 =====================
-\section{Thanh ghi}\label{sec:5}
+\subsection{Thanh ghi}\label{sec:5}
 
-\begin{spectable}{L{0.09}L{0.17}L{0.22}L{0.32}L{0.2}}{Hành vi từng offset (\sigc{gemm_rf_regs})}{tab:5-1}{\textbf{Offset} & \textbf{Tên} & \textbf{Đọc ra} & \textbf{Ghi} & \textbf{Soft reset}}
-0x00 & CTRL & 0 & Lệnh, chỉ khi \sig{strb[0]} = 1 (bảng~\ref{tab:5-2}) & — \\
-0x04 & STATUS & RFS-02, RFS-03 & Bỏ qua & Về 0 \\
-0x08 … 0x24 & 8 thanh ghi R/W & Giá trị lưu, đủ 32 bit & Theo byte strobe (AXL-06) & Giữ \\
-0x28 & HW\_CONFIG & \{0x10, 6'b0, \sig{HAS_PINGPONG}, \sig{HAS_CHAIN}, 8'd32, 8'(P)\} & Bỏ qua & — \\
-0x2C … 0x38 & \sig{PERF_*} & Bộ đếm & Bỏ qua & Về 0 \\
-0x40 & \sig{DESC_PTR} & Giá trị lưu (\sig{HAS_CHAIN}), ngược lại 0 & Theo byte strobe (\sig{HAS_CHAIN}), ngược lại bỏ qua & Giữ \\
-0x44, 0x48 & \sig{ERR_DESC_ADDR}, \sig{DESC_DONE_CNT} & \sig{i_err_desc_addr}, \sig{i_desc_done_cnt} (\sig{HAS_CHAIN}), ngược lại 0 & Bỏ qua & FSM xóa \\
-Khác & dự trữ & 0 & Bỏ qua & — \\
+\begin{spectable}{|L{0.09}|L{0.17}|L{0.22}|L{0.32}|L{0.2}|}{Hành vi từng offset (\sigc{gemm_rf_regs})}{tab:5-1}{\textbf{Offset} & \textbf{Tên} & \textbf{Đọc ra} & \textbf{Ghi} & \textbf{Soft reset}}
+0x00 & CTRL & 0 & Lệnh, chỉ khi \sig{strb[0]} = 1  & — \\\hline
+
+0x04 & STATUS & (STATUS = \{24'b0, \sig{ERR_CODE}, MODE, ERROR, \sig{busy_flag}, DONE\}. \sig{i_done_pulse}: DONE ← 1, \sig{busy_flag} ← 0. \sig{i_err_pulse}: ERROR ← 1, \sig{ERR_CODE} ← \sig{i_err_code}, \sig{busy_flag} ← 0. Như vậy BUSY về 0 đúng ở cạnh clock DONE hoặc ERROR được đặt  ), (Khi \sig{i_soft_busy} = 1, STATUS đọc ra 0x0000\_0002 (chỉ BUSY), nên tại mọi thời điểm tối đa một trong BUSY, DONE, ERROR bằng 1 ) & Bỏ qua & Về 0 \\\hline
+
+0x08 … 0x24 & 8 thanh ghi R/W & Giá trị lưu, đủ 32 bit & Theo byte strobe  & Giữ \\\hline
+
+0x28 & HW\_CONFIG & \{0x10, 6'b0, \sig{HAS_PINGPONG}, \sig{HAS_CHAIN}, 8'd32, 8'(P)\} & Bỏ qua & — \\\hline
+
+0x2C … 0x38 & \sig{PERF_*} & Bộ đếm & Bỏ qua & Về 0 \\\hline
+
+0x40 & \sig{DESC_PTR} & Giá trị lưu (\sig{HAS_CHAIN}), ngược lại 0 & Theo byte strobe (\sig{HAS_CHAIN}), ngược lại bỏ qua & Giữ \\\hline
+
+0x44, 0x48 & \sig{ERR_DESC_ADDR}, \sig{DESC_DONE_CNT} & \sig{i_err_desc_addr}, \sig{i_desc_done_cnt} (\sig{HAS_CHAIN}), ngược lại 0 & Bỏ qua & FSM xóa \\\hline
+
+Khác & dự trữ & 0 & Bỏ qua & — \\\hline
+
 \end{spectable}
 
-\begin{spectable}{L{0.3}L{0.7}}{Lệnh ghi CTRL có \sigc{strb[0]} = 1}{tab:5-2}{\textbf{Bit ghi} & \textbf{Hành vi ở cạnh clock của \sigc{wr_fire}}}
-SOFT\_RESET = 1 & \sig{o_soft_req} ← 1 (xung ở chu kỳ sau). START, START\_CHAIN bị bỏ qua (REG-05) \\
-START ∨ START\_CHAIN, và rảnh & Chấp nhận (RFS-01) \\
-START ∨ START\_CHAIN, đang bận & Bỏ qua, không đổi gì (TSK-01) \\
-Không bit nào & Không có tác dụng \\
+\begin{spectable}{|L{0.3}|L{0.7}|}{Lệnh ghi CTRL có \sigc{strb[0]} = 1}{tab:5-2}{\textbf{Bit ghi} & \textbf{Hành vi ở cạnh clock của \sigc{wr_fire}}}
+SOFT\_RESET = 1 & \sig{o_soft_req} ← 1 (xung ở chu kỳ sau). START, START\_CHAIN bị bỏ qua  \\\hline
+
+START ∨ START\_CHAIN, và rảnh & Chấp nhận  \\\hline
+
+START ∨ START\_CHAIN, đang bận & Bỏ qua, không đổi gì  \\\hline
+
+Không bit nào & Không có tác dụng \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Chấp nhận và trạng thái}{tab:5-3}
-RFS-01 & “Rảnh” = ¬\sig{busy_flag} ∧ ¬\sig{i_soft_busy} ∧ ¬\sig{o_soft_req}. Khi chấp nhận, ở cùng cạnh clock: \sig{o_cfg_*} ← các thanh ghi R/W và \sig{DESC_PTR}; \sig{busy_flag} ← 1; DONE, ERROR, \sig{ERR_CODE} ← 0; MODE ← ¬START ∧ START\_CHAIN; \sig{PERF_*} ← 0; \sig{o_start_pulse} ← 1, \sig{o_start_kind} ← \{START\_CHAIN, START\} \\
-RFS-02 & STATUS = \{24'b0, \sig{ERR_CODE}, MODE, ERROR, \sig{busy_flag}, DONE\}. \sig{i_done_pulse}: DONE ← 1, \sig{busy_flag} ← 0. \sig{i_err_pulse}: ERROR ← 1, \sig{ERR_CODE} ← \sig{i_err_code}, \sig{busy_flag} ← 0. Như vậy BUSY về 0 đúng ở cạnh clock DONE hoặc ERROR được đặt (TSK-06) \\
-RFS-03 & Khi \sig{i_soft_busy} = 1, STATUS đọc ra 0x0000\_0002 (chỉ BUSY), nên tại mọi thời điểm tối đa một trong BUSY, DONE, ERROR bằng 1 \\
-RFS-04 & \sig{i_soft_clr}: \sig{busy_flag}, DONE, ERROR, MODE, \sig{ERR_CODE}, \sig{PERF_*} ← 0 (RST-08, REG-09). Thanh ghi R/W, \sig{DESC_PTR}, \sig{o_cfg_*} giữ nguyên. Ưu tiên: \sig{i_soft_clr} > chấp nhận > \sig{i_done_pulse}/\sig{i_err_pulse} \\
-RFS-05 & TSK-03: \sig{o_start_pulse}, bản chụp và \sig{busy_flag} = 1 có hiệu lực ở cùng chu kỳ \sig{s_axi_bvalid} lên 1, nên mọi lần đọc STATUS bắt đầu sau khi CPU nhận B đều thấy tác vụ mới \\
-\end{reqtable}
 
-\subsection{\texorpdfstring{\sigc{gemm_rf_perf}}{gemm\_rf\_perf}}
-\begin{reqtable}{Bộ đếm hiệu năng (REG-10, PP-10)}{tab:5-4}
-PRF-01 & Ở mỗi chu kỳ có \sig{busy_flag} = 1 (không phải chu kỳ chấp nhận): \sig{PERF_TOTAL++}; \sig{PERF_LOAD++} nếu \sig{i_perf_load}; \sig{PERF_COMPUTE++} nếu \sig{i_perf_comp}; \sig{PERF_STORE++} nếu \sig{i_perf_store}. Mỗi bộ đếm bão hòa ở 0xFFFF\_FFFF \\
-PRF-02 & Bộ đếm về 0 khi chấp nhận tác vụ, khi \sig{i_soft_clr} và khi \sig{rst_n}; giữ giá trị sau khi tác vụ kết thúc \\
-\end{reqtable}
+\paragraph{Chấp nhận và trạng thái}\label{tab:5-3}
+\begin{itemize}
+\item “Rảnh” = ¬\sig{busy_flag} ∧ ¬\sig{i_soft_busy} ∧ ¬\sig{o_soft_req}. Khi chấp nhận, ở cùng cạnh clock: \sig{o_cfg_*} ← các thanh ghi R/W và \sig{DESC_PTR}; \sig{busy_flag} ← 1; DONE, ERROR, \sig{ERR_CODE} ← 0; MODE ← ¬START ∧ START\_CHAIN; \sig{PERF_*} ← 0; \sig{o_start_pulse} ← 1, \sig{o_start_kind} ← \{START\_CHAIN, START\}
+\item STATUS = \{24'b0, \sig{ERR_CODE}, MODE, ERROR, \sig{busy_flag}, DONE\}. \sig{i_done_pulse}: DONE ← 1, \sig{busy_flag} ← 0. \sig{i_err_pulse}: ERROR ← 1, \sig{ERR_CODE} ← \sig{i_err_code}, \sig{busy_flag} ← 0. Như vậy BUSY về 0 đúng ở cạnh clock DONE hoặc ERROR được đặt
+\item Khi \sig{i_soft_busy} = 1, STATUS đọc ra 0x0000\_0002 (chỉ BUSY), nên tại mọi thời điểm tối đa một trong BUSY, DONE, ERROR bằng 1
+\item \sig{i_soft_clr}: \sig{busy_flag}, DONE, ERROR, MODE, \sig{ERR_CODE}, \sig{PERF_*} ← 0 . Thanh ghi R/W, \sig{DESC_PTR}, \sig{o_cfg_*} giữ nguyên. Ưu tiên: \sig{i_soft_clr} > chấp nhận > \sig{i_done_pulse}/\sig{i_err_pulse}
+\item \sig{o_start_pulse}, bản chụp và \sig{busy_flag} = 1 có hiệu lực ở cùng chu kỳ \sig{s_axi_bvalid} lên 1, nên mọi lần đọc STATUS bắt đầu sau khi CPU nhận B đều thấy tác vụ mới
+\end{itemize}
+
+
+\subsubsection{\texorpdfstring{\sigc{gemm_rf_perf}}{gemm\_rf\_perf}}
+
+\paragraph{Bộ đếm hiệu năng }\label{tab:5-4}
+\begin{itemize}
+\item Ở mỗi chu kỳ có \sig{busy_flag} = 1 (không phải chu kỳ chấp nhận): \sig{PERF_TOTAL++}; \sig{PERF_LOAD++} nếu \sig{i_perf_load}; \sig{PERF_COMPUTE++} nếu \sig{i_perf_comp}; \sig{PERF_STORE++} nếu \sig{i_perf_store}. Mỗi bộ đếm bão hòa ở 0xFFFF\_FFFF
+\item Bộ đếm về 0 khi chấp nhận tác vụ, khi \sig{i_soft_clr} và khi \sig{rst_n}; giữ giá trị sau khi tác vụ kết thúc
+\end{itemize}
+
 
 % ===================== 6 =====================
-\section{Timing}\label{sec:6}
+\subsection{Timing}\label{sec:6}
 
 \begin{figure}[H]
 \centering
@@ -156,36 +229,50 @@ PRF-02 & Bộ đếm về 0 khi chấp nhận tác vụ, khi \sig{i_soft_clr} v�
 \caption{Ghi START (AW, W cùng chu kỳ 0, \sigc{bready} = 1) rồi đọc STATUS. Lệnh ghi có hiệu lực ở cạnh clock cuối chu kỳ 1; B, xung start và BUSY cùng xuất hiện ở chu kỳ 2}\label{fig:6-1}
 \end{figure}
 
-\begin{spectable}{L{0.6}L{0.4}}{Độ trễ}{tab:6-1}{\textbf{Sự kiện} & \textbf{Chu kỳ}}
-Bắt tay AW và W đều xong ở t → \sig{wr_fire} & t + 1 \\
-\sig{wr_fire} ở t → \sig{s_axi_bvalid}, \sig{o_start_pulse}, bản chụp, BUSY & t + 1 \\
-Bắt tay AR ở t → \sig{s_axi_rvalid} & t + 1 \\
-\sig{i_done_pulse} / \sig{i_err_pulse} ở t → STATUS mới & t + 1 \\
-Thông lượng ghi liên tục & 1 lệnh mỗi 3 chu kỳ khi \sig{bready} = 1 \\
+\begin{spectable}{|L{0.6}|L{0.4}|}{Độ trễ}{tab:6-1}{\textbf{Sự kiện} & \textbf{Chu kỳ}}
+Bắt tay AW và W đều xong ở t → \sig{wr_fire} & t + 1 \\\hline
+
+\sig{wr_fire} ở t → \sig{s_axi_bvalid}, \sig{o_start_pulse}, bản chụp, BUSY & t + 1 \\\hline
+
+Bắt tay AR ở t → \sig{s_axi_rvalid} & t + 1 \\\hline
+
+\sig{i_done_pulse} / \sig{i_err_pulse} ở t → STATUS mới & t + 1 \\\hline
+
+Thông lượng ghi liên tục & 1 lệnh mỗi 3 chu kỳ khi \sig{bready} = 1 \\\hline
+
 \end{spectable}
 
 % ===================== 7 =====================
-\section{Reset, hiện thực, kiểm chứng}\label{sec:7}
-\begin{reqtable}{Reset}{tab:7-1}
-RST-R01 & \sig{rst_n} = 0: mọi thanh ghi về giá trị reset của bảng 3-1 spec hệ thống; \sig{aw_v}, \sig{w_v}, \sig{s_axi_bvalid}, \sig{s_axi_rvalid}, \sig{o_start_pulse}, \sig{o_soft_req} về 0; \sig{o_cfg_*} về 0 \\
-RST-R02 & \sig{i_soft_clr}: theo RFS-04. Giao dịch AXI4-Lite đang dở không bị ảnh hưởng \\
-\end{reqtable}
+\subsection{Reset, hiện thực, kiểm chứng}\label{sec:7}
 
-\begin{reqtable}{Hiện thực}{tab:7-2}
-IMP-01 & SystemVerilog tổng hợp được, không latch. Mux đọc là \sig{case} trên \sig{araddr[11:2]} \\
-IMP-02 & Với \sig{HAS_CHAIN} = 0, thanh ghi \sig{DESC_PTR} được loại bằng \sig{generate} \\
-\end{reqtable}
+\paragraph{Reset}\label{tab:7-1}
+\begin{itemize}
+\item \sig{rst_n} = 0: mọi thanh ghi về giá trị reset trong mục Đặc tả thanh ghi của spec tổng; \sig{aw_v}, \sig{w_v}, \sig{s_axi_bvalid}, \sig{s_axi_rvalid}, \sig{o_start_pulse}, \sig{o_soft_req} về 0; \sig{o_cfg_*} về 0
+\item \sig{i_soft_clr}: \sig{busy_flag}, DONE, ERROR, MODE, \sig{ERR_CODE}, \sig{PERF_*} ← 0 . Thanh ghi R/W, \sig{DESC_PTR}, \sig{o_cfg_*} giữ nguyên. Ưu tiên: \sig{i_soft_clr} > chấp nhận > \sig{i_done_pulse}/\sig{i_err_pulse} . Giao dịch AXI4-Lite đang dở không bị ảnh hưởng
+\end{itemize}
 
-\begin{reqtable}{Assertion bắt buộc (SVA)}{tab:7-3}
-AS-01 & \sig{s_axi_bvalid} ∧ ¬\sig{s_axi_bready} → \sig{s_axi_bvalid} ở chu kỳ sau; tương tự \sig{rvalid} và \sig{rdata} không đổi \\
-AS-02 & \sig{o_start_pulse} → ¬\sig{busy_flag} ở chu kỳ trước \\
-AS-03 & Tối đa một trong STATUS[0], STATUS[1], STATUS[2] bằng 1 \\
-AS-04 & \sig{busy_flag} → \sig{$stable(o_cfg_*)} \\
-AS-05 & \sig{i_done_pulse} ∨ \sig{i_err_pulse} → \sig{busy_flag} \\
-\end{reqtable}
+
+
+\paragraph{Hiện thực}\label{tab:7-2}
+\begin{itemize}
+\item SystemVerilog tổng hợp được, không latch. Mux đọc là \sig{case} trên \sig{araddr[11:2]}
+\item Với \sig{HAS_CHAIN} = 0, thanh ghi \sig{DESC_PTR} được loại bằng \sig{generate}
+\end{itemize}
+
+
+
+\paragraph{Assertion bắt buộc (SVA)}\label{tab:7-3}
+\begin{itemize}
+\item \sig{s_axi_bvalid} ∧ ¬\sig{s_axi_bready} → \sig{s_axi_bvalid} ở chu kỳ sau; tương tự \sig{rvalid} và \sig{rdata} không đổi
+\item \sig{o_start_pulse} → ¬\sig{busy_flag} ở chu kỳ trước
+\item Tối đa một trong STATUS[0], STATUS[1], STATUS[2] bằng 1
+\item \sig{busy_flag} → \sig{$stable(o_cfg_*)}
+\item \sig{i_done_pulse} ∨ \sig{i_err_pulse} → \sig{busy_flag}
+\end{itemize}
+
 
 \begin{notebox}[Kiểm chứng bằng mô hình]
-\sig{gemm_regfile_model.py}: 200 lượt × 60 lệnh ngẫu nhiên (AW và W lệch nhau 0 … 3 chu kỳ, \sig{bready} ngẫu nhiên, byte strobe ngẫu nhiên, offset dự trữ, START/SOFT\_RESET xen kẽ với FSM giả lập kết thúc tác vụ sau thời gian ngẫu nhiên): đọc lại thanh ghi R/W đúng từng byte, offset dự trữ đọc 0, STATUS không bao giờ có hai cờ cùng lúc; 300 lượt riêng kiểm TSK-03.
+\sig{gemm_regfile_model.py}: 200 lượt × 60 lệnh ngẫu nhiên (AW và W lệch nhau 0 … 3 chu kỳ, \sig{bready} ngẫu nhiên, byte strobe ngẫu nhiên, offset dự trữ, START/SOFT\_RESET xen kẽ với FSM giả lập kết thúc tác vụ sau thời gian ngẫu nhiên): đọc lại thanh ghi R/W đúng từng byte, offset dự trữ đọc 0, STATUS không bao giờ có hai cờ cùng lúc; 300 lượt riêng kiểm (Register File phát \sig{start_pulse} và chụp cấu hình trước khi trả phản hồi B cho lệnh ghi CTRL; mọi lần đọc STATUS sau khi lệnh ghi hoàn tất đều thấy tác vụ mới ).
 \end{notebox}
 
 \end{document}

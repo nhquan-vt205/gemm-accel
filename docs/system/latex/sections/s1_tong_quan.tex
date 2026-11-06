@@ -1,9 +1,6 @@
-% Mục 1 — Tổng quan
 \section{Tổng quan}\label{sec:1}
 
-\begin{keypoint}
-\sig{gemm_accel_top} là bộ tăng tốc nhân ma trận INT8 gắn vào Chipyard SoC. CPU chỉ ghi cấu hình qua MMIO và chờ kết quả. Accelerator tự dùng DMA chép A, B từ DRAM vào scratchpad, tính C = A × B trên systolic array, cho kết quả đi qua \textbf{VPU} để cộng bias, requantize và ReLU nếu được bật, rồi tự ghi kết quả về DRAM.
-\end{keypoint}
+
 
 \subsection{Phạm vi chức năng}\label{sec:1.1}
 \begin{itemize}
@@ -16,85 +13,54 @@
 
 \subsection{Quy ước}\label{sec:1.2}
 \begin{itemize}
-\item “phải” = bắt buộc; “nên” = khuyến nghị; “được phép” = tùy chọn. Dòng có mã (ví dụ \textbf{REG-03}) là yêu cầu; hình vẽ và ví dụ chỉ để minh họa.
 \item M, N, K: A là M×K, B là K×N, C và Y là M×N. P: kích thước array vật lý (P×P PE). \emph{word} = 32 bit; \emph{beat} = một lần truyền AXI 32 bit; \emph{tile} = khối P×P của C mà array tính trong một lượt.
 \item \emph{Tác vụ}: từ khi lệnh START được chấp nhận đến khi STATUS báo DONE hoặc ERROR. \emph{Bản chụp cấu hình}: bản sao các thanh ghi cấu hình, lấy đúng lúc START được chấp nhận và dùng suốt tác vụ.
-\item Màu trong hình: \textcolor{brand}{\textbf{đỏ}} là điều khiển và trạng thái, \textcolor{data}{\textbf{xanh}} là dữ liệu ma trận.
 \end{itemize}
 
-\subsection{Sơ đồ khối}\label{sec:1.3}
+\label{sec:1.3}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=1cm,y=1cm]
-% ---- SoC
-\node[blkc,minimum width=2.0cm,minimum height=1.1cm] (cpu) at (1.0,7.3) {\textbf{Rocket CPU}\\[-1pt]\scriptsize RV32IMAC};
-\node[blkc,minimum width=2.0cm,minimum height=2.6cm] (xbar) at (1.0,4.4) {\textbf{TileLink}\\\textbf{crossbar}\\[-1pt]\scriptsize system bus};
-\node[blkc,minimum width=2.0cm,minimum height=1.1cm] (dram) at (1.0,1.3) {\textbf{DRAM}\\[-1pt]\scriptsize từ 0x8000\_0000};
-\draw[cpu,line width=0.8pt,<->] (cpu) -- (xbar);
-\draw[cpu,line width=0.8pt,<->] (xbar) -- (dram);
-% ---- accel box
-\draw[brand,line width=1pt,rounded corners=3pt,fill=cream] (3.3,0.1) rectangle (16.7,8.3);
-\node[anchor=north west,font=\headfont\bfseries\small,text=brand] at (3.4,8.25) {gemm\_accel\_top};
-\node[anchor=north east,font=\scriptsize,text=muted] at (16.6,8.25) {Chisel BlackBox trong GemmWrapper.scala};
-% ---- blocks
-\node[blk,minimum width=2.9cm,minimum height=1.35cm] (rf) at (5.35,6.75) {\textbf{Register File}\\[-1pt]\scriptsize AXI4-Lite slave\\[-2pt]\scriptsize thanh ghi, bản chụp cấu hình};
-\node[blk,minimum width=6.4cm,minimum height=1.35cm] (ctl) at (11.75,6.75) {\textbf{Main FSM}\\[-1pt]\scriptsize kiểm tra cấu hình · chạy lần lượt các pha\\[-2pt]\scriptsize LOAD\_BIAS · LOAD\_A · LOAD\_B · COMPUTE · STORE\_C · soft reset};
-\node[blk,minimum width=2.9cm,minimum height=2.5cm] (dma) at (5.35,3.35) {\textbf{DMA engine}\\[-1pt]\scriptsize AXI4-Full master\\[3pt]\scriptsize LOAD\_A, LOAD\_B,\\[-2pt]\scriptsize LOAD\_BIAS, STORE\_C\\[3pt]\scriptsize tự sinh địa chỉ, cắt burst};
-\node[blk,minimum width=3.6cm,minimum height=3.7cm] (sram) at (9.55,3.15) {};
-\node[font=\small\bfseries,anchor=north] at (9.55,4.95) {Local SRAM};
-\node[font=\scriptsize,anchor=north] at (9.55,4.6) {scratchpad chia bank};
-\node[blkd,minimum width=2.6cm,minimum height=0.55cm,inner sep=1pt,font=\scriptsize] at (9.55,3.9) {A · 256 word};
-\node[blkd,minimum width=2.6cm,minimum height=0.55cm,inner sep=1pt,font=\scriptsize] at (9.55,3.15) {B · 256 word};
-\node[blkd,minimum width=2.6cm,minimum height=0.55cm,inner sep=1pt,font=\scriptsize] at (9.55,2.4) {C · 1024 word};
-\node[blkn,minimum width=2.6cm,minimum height=0.55cm,inner sep=1pt,font=\scriptsize] at (9.55,1.65) {BIAS · 32 word};
-\node[blk,minimum width=3.0cm,minimum height=1.5cm] (arr) at (14.55,4.15) {\textbf{Systolic array}\\[-1pt]\scriptsize P×P PE, Output-Stationary\\[-2pt]\scriptsize bộ tuần tự tile};
-\node[blkn,minimum width=3.0cm,minimum height=1.2cm] (vpu) at (14.55,1.6) {\textbf{VPU}\\[-1pt]\scriptsize bias · requantize · ReLU\\[-2pt]\scriptsize P lane, 1 hàng/chu kỳ};
-% ---- control arrows
-\draw[ctl] (xbar.east |- 0,6.95) -- node[lbl,above]{AXI4-Lite} node[lbl,below]{(TLToAXI4)} (rf.west |- 0,6.95);
-\draw[ctl] ([yshift=4pt]rf.east) -- node[lbl,above]{start\_pulse} ([yshift=4pt]ctl.west);
-\draw[ctl] ([yshift=-14pt]ctl.west) -- node[lbl,below]{trạng thái} ([yshift=-14pt]rf.east);
-\draw[ctl] (9.0,6.07) -- (9.0,5.35) -- (6.0,5.35) -- (6.0,4.6) node[lbl,pos=0.5,right,xshift=1pt]{lệnh DMA, done/error};
-\draw[ctl] (14.2,6.07) -- node[lbl,left]{pe\_start/done} (14.2,4.9);
-% ---- data arrows
-\draw[dat,<->] (dma.west |- 0,3.35) -- node[lbl,above,text=data]{AXI4-Full} node[lbl,below,text=data]{(AXI4ToTL)} (xbar.east |- 0,3.35);
-\draw[dat] ([yshift=10pt]dma.east) -- node[lbl,above,text=data]{A, B, bias} ([yshift=10pt]dma.east -| sram.west);
-\draw[dat] ([yshift=-18pt]dma.east -| sram.west) -- node[lbl,below,text=data]{C / Y} ([yshift=-18pt]dma.east);
-\draw[dat] (sram.east |- 0,4.15) -- node[lbl,above,text=data]{A, B} (arr.west);
-\draw[dat] (14.55,3.4) -- node[lbl,right,text=data]{hàng INT32} (14.55,2.2);
-\draw[dat,<->] (vpu.west) -- node[lbl,above,text=data]{bias} node[lbl,below,text=data]{C / Y} (sram.east |- 0,1.6);
-% legend
-\draw[ctl] (3.6,0.45) -- ++(0.6,0) node[right,font=\scriptsize,text=ink]{điều khiển, trạng thái};
-\draw[dat] (6.7,0.45) -- ++(0.6,0) node[right,font=\scriptsize,text=ink]{dữ liệu ma trận};
-\node[blkn,minimum width=0.5cm,minimum height=0.3cm,inner sep=0pt] at (9.4,0.45) {};
-\node[right,font=\scriptsize] at (9.65,0.45) {phần thêm so với kiến trúc ban đầu (VPU)};
-\end{tikzpicture}
-\caption{Sơ đồ khối \sigc{gemm_accel_top}. Không vẽ: bộ đồng bộ reset; bản chụp cấu hình từ Register File tới FSM, DMA, Array, VPU; \sigc{rst_n_sync} và \sigc{soft_clr} tới mọi module}\label{fig:1-1}
-\end{figure}
+
 
 \subsection{Module}\label{sec:1.4}
 
-\begin{spectable}{L{0.25}L{0.15}L{0.6}}{Module trong \sigc{gemm_accel_top}}{tab:1-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
-\sig{gemm_register_file} & \sig{u_regfile} & AXI4-Lite slave; thanh ghi cấu hình, trạng thái, bộ đếm; chấp nhận START; giữ bản chụp cấu hình \\
-\sig{gemm_main_fsm} & \sig{u_main_fsm} & Kiểm tra cấu hình; chạy lần lượt các pha của tác vụ; ra lệnh cho DMA và array; báo DONE/ERROR; điều phối soft reset \\
-\sig{gemm_dma_engine} & \sig{u_dma} & AXI4-Full master; chép DRAM ↔ scratchpad theo lệnh LOAD\_A, LOAD\_B, LOAD\_BIAS, STORE\_C \\
-\sig{gemm_local_sram} & \sig{u_sram} & Buffer A, B, C, BIAS, chia bank bên trong để phục vụ array và VPU mỗi chu kỳ \\
-\sig{gemm_systolic_array} & \sig{u_array} & Mảng P×P PE (\sig{gemm_pe}), làm lệch dữ liệu, bộ tuần tự tile, xả kết quả theo hàng \\
-\sig{gemm_vpu} & \sig{u_vpu} & Hậu xử lý trên đường xả kết quả: bias, requantize, ReLU, kẹp INT8; đi thẳng khi tắt \\
+\begin{spectable}{|L{0.25}|L{0.15}|L{0.6}|}{Module trong \sigc{gemm_accel_top}}{tab:1-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
+\sig{gemm_register_file} & \sig{u_regfile} & AXI4-Lite slave; thanh ghi cấu hình, trạng thái, bộ đếm; chấp nhận START; giữ bản chụp cấu hình \\\hline
+
+\sig{gemm_main_fsm} & \sig{u_main_fsm} & Kiểm tra cấu hình; chạy lần lượt các pha của tác vụ; ra lệnh cho DMA và array; báo DONE/ERROR; điều phối soft reset \\\hline
+
+\sig{gemm_dma_engine} & \sig{u_dma} & AXI4-Full master; chép DRAM ↔ scratchpad theo lệnh LOAD\_A, LOAD\_B, LOAD\_BIAS, STORE\_C \\\hline
+
+\sig{gemm_local_sram} & \sig{u_sram} & Buffer A, B, C, BIAS, chia bank bên trong để phục vụ array và VPU mỗi chu kỳ \\\hline
+
+\sig{gemm_systolic_array} & \sig{u_array} & Mảng P×P PE (\sig{gemm_pe}), làm lệch dữ liệu, bộ tuần tự tile, xả kết quả theo hàng \\\hline
+
+\sig{gemm_vpu} & \sig{u_vpu} & Hậu xử lý trên đường xả kết quả: bias, requantize, ReLU, kẹp INT8; đi thẳng khi tắt \\\hline
+
 \end{spectable}
 
-Ngoài 6 module trên, \sig{gemm_accel_top} có một bộ đồng bộ reset 2 flip-flop (RST-01).
+Ngoài 6 module trên, \sig{gemm_accel_top} có một bộ đồng bộ reset 2 flip-flop .
 
 \subsection{Tham số hệ thống}\label{sec:1.5}
 
-\begin{spectable}{L{0.3}L{0.25}L{0.45}}{Tham số hệ thống}{tab:1-2}{\textbf{Tham số} & \textbf{Giá trị} & \textbf{Ghi chú}}
-\sig{PE_ARRAY_SIZE} (P) & 4 hoặc 8; mặc định 8 & Kết quả không phụ thuộc P \\
-\sig{MAX_DIM} & 32 & Giới hạn M, N, K \\
-\sig{AXI_DATA_WIDTH} & 32 & Cả AXI4-Lite và AXI4-Full \\
-\sig{MAX_BURST_BEATS} & 16 (mặc định) & Đặt theo giới hạn của bridge \\
-\sig{SRAM_RD_LAT} & 1 chu kỳ & Cổng phía array và VPU \\
-Buffer A / B / C / BIAS & 256 / 256 / 1024 / 32 word & Tổng 6,125 KiB \\
-\sig{MMIO_BASE} & 0x6000\_0000, vùng 4 KiB & \\
-\sig{DRAM_BASE} & 0x8000\_0000 & \\
-Burst outstanding & 1 đọc + 1 ghi & \\
+\begin{spectable}{|L{0.3}|L{0.25}|L{0.45}|}{Tham số hệ thống}{tab:1-2}{\textbf{Tham số} & \textbf{Giá trị} & \textbf{Ghi chú}}
+\sig{PE_ARRAY_SIZE} (P) & 4 hoặc 8; mặc định 8 & Kết quả không phụ thuộc P \\\hline
+
+\sig{MAX_DIM} & 32 & Giới hạn M, N, K \\\hline
+
+\sig{AXI_DATA_WIDTH} & 32 & Cả AXI4-Lite và AXI4-Full \\\hline
+
+\sig{MAX_BURST_BEATS} & 16 (mặc định) & Đặt theo giới hạn của bridge \\\hline
+
+\sig{SRAM_RD_LAT} & 1 chu kỳ & Cổng phía array và VPU \\\hline
+
+Buffer A / B / C / BIAS & 256 / 256 / 1024 / 32 word & Tổng 6,125 KiB \\\hline
+
+\sig{MMIO_BASE} & 0x6000\_0000, vùng 4 KiB & \\\hline
+
+\sig{DRAM_BASE} & 0x8000\_0000 & \\\hline
+
+Burst outstanding & 1 đọc + 1 ghi & \\\hline
+
 \end{spectable}
+
+% Mục 6 — Port top-level (đã khóa)

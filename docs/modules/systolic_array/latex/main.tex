@@ -1,107 +1,110 @@
-% !TEX program = xelatex
-% Spec module gemm_systolic_array v1.0
 \documentclass[10pt,a4paper]{article}
-\input{preamble}
-
+\newcommand{\ModHeader}{gemm\_systolic\_array}
+\input{../../../common/timer_style.tex}
 \begin{document}
-% ===================== Bìa =====================
-\thispagestyle{empty}
-\begin{tikzpicture}[remember picture,overlay]
-  \fill[cream] (current page.north west) rectangle (current page.south east);
-\end{tikzpicture}
-\vspace*{3cm}
-{\headfont\bfseries\small\color{brand}\MakeUppercase{Spec module · phiên bản 1.0}\par}
-\vspace{0.6cm}
-\begin{tikzpicture}[baseline=(b.north)]\node[fill=brand,minimum width=0.25cm,minimum height=3.6cm,inner sep=0pt](b){};\end{tikzpicture}\hspace{0.45cm}\begin{minipage}[t]{0.9\linewidth}
-{\headfont\bfseries\fontsize{28}{34}\selectfont\color{brand}gemm\_systolic\_array\par}
-\vspace{6pt}
-{\headfont\bfseries\fontsize{18}{24}\selectfont\color{brand}Systolic array Output-Stationary P×P\par}
-\vspace{10pt}
-{\large\color{ink}Port list, module con, vi kiến trúc và timing chính xác theo chu kỳ\par}
-\vspace{4pt}
-{\normalsize\color{muted}Bộ tăng tốc GEMM INT8 trên Chipyard SoC\par}
-\end{minipage}
-\vspace{2cm}
-
-\begingroup\small
-\begin{tabular}{@{}L{0.2}L{0.78}@{}}
-\toprule
-\textbf{Module} & \sig{gemm_systolic_array} (instance \sig{u_array} trong \sig{gemm_accel_top}) \\
-\textbf{Module con} & \sig{gemm_tile_seq}, \sig{gemm_skew}, \sig{gemm_pe_grid}, \sig{gemm_pe}, \sig{gemm_drain} \\
-\textbf{Tuân theo} & Spec hệ thống v1.0: mục 2.1 (FUN-01, FUN-02, FUN-07), mục 4.3 (quyền truy cập SRAM), mục 5.5 (ARR-01 … ARR-08) \\
-\textbf{Kèm theo} & \sig{gemm_systolic_array_model.py}: mô hình tham chiếu cycle-accurate của đúng vi kiến trúc này; kết quả và mọi thời điểm trong tài liệu được kiểm bằng mô hình đó \\
-\bottomrule
-\end{tabular}
-\endgroup
-\clearpage
+{\Large\bfseries ĐẶC TẢ THIẾT KẾ gemm\_systolic\_array}\par
 \tableofcontents
 \clearpage
+\section{Tổng quan}
+\subsection{Tính năng chính}\label{sec:1}
 
-% ===================== 1 =====================
-\section{Chức năng}\label{sec:1}
 
-\begin{keypoint}
 Sau một xung \sig{i_pe_start}, array tự duyệt mọi tile P×P của C, tự đọc A và B từ scratchpad, tính tích lũy INT32 trong các PE, rồi xả kết quả sang VPU theo từng hàng, mỗi chu kỳ một hàng. Khi hàng cuối cùng đã đi qua VPU và được ghi vào buffer C, array phát một xung \sig{o_pe_done}. Array không bao giờ chờ ai và không có đầu ra lỗi.
-\end{keypoint}
 
-\begin{reqtable}{Chức năng}{tab:1-1}
-SA-01 & Với cấu hình M, N, K của \sig{i_matrix_dim}, array xuất đúng một lần mỗi phần tử $C[i][j] = \sum_{k} A[i][k]\cdot B[k][j]$, 0 ≤ i < M, 0 ≤ j < N, ở dạng INT32 (tích 16 bit có dấu, cộng dồn wrap mod $2^{32}$) \\
-SA-02 & Kết quả được xuất theo đoạn hàng: một lần xuất gồm hàng i, cột $j_0 … j_0+P-1$ và mask P bit; lane có mask = 0 mang giá trị không xác định \\
-SA-03 & Kết quả không phụ thuộc P và không phụ thuộc \sig{L_VPU} \\
-SA-04 & Array chỉ đọc buffer A, B và chỉ xuất sang VPU; không đọc buffer C, không truy cập DRAM, không truy cập buffer BIAS \\
-\end{reqtable}
 
-\subsection{Thuật toán}
+
+\paragraph{Chức năng}\label{tab:1-1}
+\begin{itemize}
+\item Với cấu hình M, N, K của \sig{i_matrix_dim}, array xuất đúng một lần mỗi phần tử $C[i][j] = \sum_{k} A[i][k]\cdot B[k][j]$, 0 ≤ i < M, 0 ≤ j < N, ở dạng INT32 (tích 16 bit có dấu, cộng dồn wrap mod $2^{32}$)
+\item Kết quả được xuất theo đoạn hàng: một lần xuất gồm hàng i, cột $j_0 … j_0+P-1$ và mask P bit; lane có mask = 0 mang giá trị không xác định
+\item Kết quả không phụ thuộc P và không phụ thuộc \sig{L_VPU}
+\item Array chỉ đọc buffer A, B và chỉ xuất sang VPU; không đọc buffer C, không truy cập DRAM, không truy cập buffer BIAS
+\end{itemize}
+
+
+\subsubsection{Thuật toán}
 C được chia thành lưới $T_M \times T_N$ tile, $T_M = \lceil M/P\rceil$, $T_N = \lceil N/P\rceil$; tile thứ n có $(t_i, t_j)$ với $n = t_i T_N + t_j$, phủ hàng $i_0 = t_i P$ … $i_0+P-1$ và cột $j_0 = t_j P$ … $j_0+P-1$. Trong tile, PE(r, c) tích lũy $C[i_0+r][j_0+c]$ qua toàn bộ k = 0 … K−1 (Output-Stationary). Chi tiết lý thuyết ở tài liệu “Thuật toán GEMM, systolic array và VPU”, mục 5.
 
-\section{Tham số}\label{sec:2}
-\begin{spectable}{L{0.2}L{0.16}L{0.64}}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
-\sig{P} & 8 & Kích thước array; chỉ nhận 4 hoặc 8. Nối từ \sig{PE_ARRAY_SIZE} của top \\
-\sig{L_VPU} & 0 & Độ trễ của VPU (chu kỳ), 0 … 7; phải bằng đúng độ trễ của \sig{gemm_vpu} được instance \\
-\sig{IDX_W} & 5 & localparam: độ rộng chỉ số hàng/cột/k (0 … 31) \\
-\sig{DIM_W} & 6 & localparam: độ rộng giá trị M, N, K (1 … 32) \\
+\subsection{Tham số}\label{sec:2}
+\begin{spectable}{|L{0.2}|L{0.16}|L{0.64}|}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
+\sig{P} & 8 & Kích thước array; chỉ nhận 4 hoặc 8. Nối từ \sig{PE_ARRAY_SIZE} của top \\\hline
+
+\sig{L_VPU} & 0 & Độ trễ của VPU (chu kỳ), 0 … 7; phải bằng đúng độ trễ của \sig{gemm_vpu} được instance \\\hline
+
+\sig{IDX_W} & 5 & localparam: độ rộng chỉ số hàng/cột/k (0 … 31) \\\hline
+
+\sig{DIM_W} & 6 & localparam: độ rộng giá trị M, N, K (1 … 32) \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Tham số}{tab:2-2}
-SA-05 & P ∉ \{4, 8\} hoặc \sig{L_VPU} ∉ [0, 7] phải bị chặn lúc elaboration (\sig{$error} trong \sig{generate}) \\
-\end{reqtable}
+
+\paragraph{Tham số}\label{tab:2-2}
+\begin{itemize}
+\item P ∉ \{4, 8\} hoặc \sig{L_VPU} ∉ [0, 7] phải bị chặn lúc elaboration (\sig{$error} trong \sig{generate})
+\end{itemize}
+
 
 % ===================== 3 =====================
-\section{Port list}\label{sec:3}
+\subsection{Tín hiệu giao tiếp}\label{sec:3}
 
-\begin{spectable}{L{0.21}L{0.08}L{0.08}L{0.17}L{0.46}}{Port của \sigc{gemm_systolic_array}}{tab:3-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Nối với} & \textbf{Mô tả}}
-\multicolumn{5}{@{}l}{\textit{Clock, reset}} \\
-\sig{clk} & 1 & In & top & Clock \\
-\sig{rst_n} & 1 & In & \sig{rst_n_sync} & Reset bất đồng bộ tích cực thấp, đã đồng bộ sườn nhả \\
-\sig{i_soft_clr} & 1 & In & FSM & Xung xóa đồng bộ 1 chu kỳ (\sig{soft_clr}) \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Điều khiển và cấu hình}} \\
-\sig{i_pe_start} & 1 & In & FSM & Xung 1 chu kỳ: bắt đầu tính toàn bộ tác vụ \\
-\sig{o_pe_done} & 1 & Out & FSM & Xung 1 chu kỳ: mọi kết quả đã được ghi vào buffer C \\
-\sig{o_busy} & 1 & Out & FSM & Mức: array đang làm việc \\
-\sig{i_matrix_dim} & 32 & In & FSM & Kích thước của job đang tính (\sig{o_comp_dim} của FSM): [7:0] M, [15:8] N, [23:16] K \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng đọc buffer A (array là master, không có ready)}} \\
-\sig{o_a_rd_en} & 1 & Out & SRAM & Yêu cầu đọc một vector A \\
-\sig{o_a_rd_row} & 5 & Out & SRAM & $i_0$ (bội của P) \\
-\sig{o_a_rd_k} & 5 & Out & SRAM & k \\
-\sig{i_a_rd_data} & 8P & In & SRAM & Lane r (bit [8r+7 : 8r]) = $A[i_0+r][k]$; hợp lệ 1 chu kỳ sau yêu cầu \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng đọc buffer B}} \\
-\sig{o_b_rd_en} & 1 & Out & SRAM & Yêu cầu đọc một vector B \\
-\sig{o_b_rd_k} & 5 & Out & SRAM & k \\
-\sig{o_b_rd_col} & 5 & Out & SRAM & $j_0$ (bội của P) \\
-\sig{i_b_rd_data} & 8P & In & SRAM & Lane c (bit [8c+7 : 8c]) = $B[k][j_0+c]$; hợp lệ 1 chu kỳ sau yêu cầu \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Luồng hàng kết quả sang VPU (không có ready)}} \\
-\sig{o_row_valid} & 1 & Out & VPU & Có một đoạn hàng kết quả trong chu kỳ này \\
-\sig{o_row_idx} & 5 & Out & VPU & Hàng i \\
-\sig{o_row_col} & 5 & Out & VPU & Cột đầu $j_0$ (bội của P) \\
-\sig{o_row_data} & 32P & Out & VPU & Lane c (bit [32c+31 : 32c]) = $C[i][j_0+c]$, INT32 \\
-\sig{o_row_mask} & P & Out & VPU & Bit c = 1: lane c hợp lệ và phải được ghi \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_systolic_array}}{tab:3-1}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\multicolumn{4}{@{}l}{\textit{Clock, reset}} \\\hline
+
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+
+\sig{i_soft_clr} & 1 & Input & Xung xóa đồng bộ dài một chu kỳ do Main FSM phát.\newline Xóa trạng thái điều khiển tại cạnh lên; phạm vi xóa dữ liệu được quy định trong mục Reset. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Điều khiển và cấu hình}} \\\hline
+
+\sig{i_pe_start} & 1 & Input & Xung một chu kỳ bắt đầu COMPUTE cho toàn bộ job.\newline Chỉ phát khi array rảnh; kích thước và cấu hình tính toán phải hợp lệ cùng chu kỳ. \\\hline
+
+\sig{o_pe_done} & 1 & Output & Xung một chu kỳ báo COMPUTE đã hoàn tất, bao gồm hậu xử lý và ghi kết quả vào buffer C.\newline Không báo cho lượt tính bị soft clear hủy. \\\hline
+
+\sig{o_busy} & 1 & Output & Báo array đang tính.\newline Bằng 1 từ chu kỳ sau khi nhận pe start đến hết chu kỳ có pe done; về 0 khi soft clear hủy lượt tính. \\\hline
+
+\sig{i_matrix_dim} & 32 & Input & Kích thước job.\newline Bit [7:0]: M; [15:8]: N; [23:16]: K.\newline M từ 1 đến 32; N và K là bội của 4, từ 4 đến 32.\newline Phải hợp lệ khi bắt đầu lượt tính. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng đọc buffer A (array là master, không có ready)}} \\\hline
+
+\sig{o_a_rd_en} & 1 & Output & Cho phép đọc một vector A.\newline Địa chỉ hợp lệ trong chu kỳ enable = 1; dữ liệu trả về đúng một chu kỳ sau. \\\hline
+
+\sig{o_a_rd_row} & 5 & Output & Hàng đầu i0 của vector A.\newline Là bội của P; hợp lệ cùng read enable. \\\hline
+
+\sig{o_a_rd_k} & 5 & Output & Chỉ số k của cột A cần đọc.\newline Hợp lệ cùng read enable; phải nhỏ hơn K. \\\hline
+
+\sig{i_a_rd_data} & 8P & Input & Vector P byte INT8 của A.\newline Lane r tại bit [8r +: 8] chứa A[i0+r][k].\newline Hợp lệ một chu kỳ sau yêu cầu đọc; lane ngoài miền tác vụ có thể chứa giá trị bất kỳ. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng đọc buffer B}} \\\hline
+
+\sig{o_b_rd_en} & 1 & Output & Cho phép đọc một vector B.\newline Địa chỉ hợp lệ trong chu kỳ enable = 1; dữ liệu trả về đúng một chu kỳ sau. \\\hline
+
+\sig{o_b_rd_k} & 5 & Output & Chỉ số k của hàng B cần đọc.\newline Hợp lệ cùng read enable; phải nhỏ hơn K. \\\hline
+
+\sig{o_b_rd_col} & 5 & Output & Cột đầu j0 của vector B.\newline Là bội của P; hợp lệ cùng read enable. \\\hline
+
+\sig{i_b_rd_data} & 8P & Input & Vector P byte INT8 của B.\newline Lane c tại bit [8c +: 8] chứa B[k][j0+c].\newline Hợp lệ một chu kỳ sau yêu cầu đọc; lane ngoài miền tác vụ có thể chứa giá trị bất kỳ. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Luồng hàng kết quả sang VPU (không có ready)}} \\\hline
+
+\sig{o_row_valid} & 1 & Output & Báo có một đoạn hàng kết quả hợp lệ trong chu kỳ này.\newline Bên nhận phải lấy ngay; giao tiếp không có ready. \\\hline
+
+\sig{o_row_idx} & 5 & Output & Chỉ số hàng i của đoạn kết quả.\newline Hợp lệ cùng o\_row\_valid và phải nhỏ hơn M. \\\hline
+
+\sig{o_row_col} & 5 & Output & Cột đầu j0 của đoạn kết quả.\newline Là bội của P, nhỏ hơn N; hợp lệ cùng o\_row\_valid. \\\hline
+
+\sig{o_row_data} & 32P & Output & Vector P giá trị INT32 có dấu.\newline Lane c tại bit [32c +: 32] chứa C[i][j0+c]; hợp lệ cùng o\_row\_valid, chỉ dùng lane có mask = 1. \\\hline
+
+\sig{o_row_mask} & P & Output & Mặt nạ các lane hợp lệ của đoạn hàng.\newline Bit c = 1 khi j0 + c < N; bit c = 0 ngăn ghi phần tử tương ứng.\newline Hợp lệ cùng o\_row\_valid. \\\hline
+
 \end{spectable}
 
-\subsection{Quy tắc giao tiếp}
+\subsubsection{Quy tắc giao tiếp}
 
 \interfacecard{FSM ↔ Array}
 {\sig{i_pe_start} bắt đầu một tác vụ; \sig{o_pe_done} báo xong; \sig{o_busy} cho biết đang chạy.}
@@ -109,78 +112,78 @@ SA-05 & P ∉ \{4, 8\} hoặc \sig{L_VPU} ∉ [0, 7] phải bị chặn lúc ela
 {\sig{i_pe_start} chỉ được phát khi \sig{o_busy} = 0. Từ \sig{i_pe_start} tới \sig{o_pe_done}, \sig{i_matrix_dim} phải giữ ổn định.}
 {Sau \sig{o_pe_done}, FSM sang STORE\_C; array về rảnh ở chu kỳ kế tiếp.}
 
-\begin{reqtable}{Giao tiếp}{tab:3-2}
-SA-06 & Chu kỳ có \sig{i_pe_start} = 1 gọi là chu kỳ 0. Array chốt M, N, K ở cạnh clock cuối chu kỳ 0. \sig{o_busy} = 1 từ chu kỳ 1 đến hết chu kỳ có \sig{o_pe_done} = 1 \\
-SA-07 & Mỗi \sig{i_pe_start} được chấp nhận có đúng một \sig{o_pe_done}. \sig{i_pe_start} khi \sig{o_busy} = 1 bị bỏ qua (và vi phạm assertion AS-01) \\
-SA-08 & Giá trị M, N, K được giả định hợp lệ (FSM đã kiểm tra): 1 ≤ M ≤ 32; N, K ∈ \{4, 8, …, 32\}. Với giá trị khác, hành vi không xác định \\
-SA-09 & \sig{o_a_rd_en} và \sig{o_b_rd_en} luôn bằng nhau. Khi bằng 1: \sig{o_a_rd_row} và \sig{o_b_rd_col} là bội của P; \sig{o_a_rd_k} = \sig{o_b_rd_k} < K. Khi bằng 0, các port địa chỉ có giá trị tùy ý \\
-SA-10 & SRAM trả dữ liệu đúng 1 chu kỳ sau chu kỳ có yêu cầu; array không dùng \sig{i_a_rd_data}, \sig{i_b_rd_data} ở chu kỳ không có yêu cầu trước đó. Lane ứng với hàng ≥ M hoặc cột ≥ N được phép mang giá trị bất kỳ, kể cả X trong mô phỏng \\
-SA-11 & Mọi port \sig{o_row_*} đều lấy từ thanh ghi. Khi \sig{o_row_valid} = 1: \sig{o_row_idx} < M; \sig{o_row_mask[c]} = 1 khi và chỉ khi $j_0 + c < N$. VPU phải nhận đoạn hàng ở đúng chu kỳ đó \\
-SA-12 & Không có hai đoạn hàng cho cùng một (i, $j_0$) trong một tác vụ; mọi (i, $j_0$) với i < M, $j_0$ < N đều xuất hiện \\
-SA-13 & \sig{o_pe_done} = 1 đúng \sig{L_VPU} + 1 chu kỳ sau chu kỳ có \sig{o_row_valid} = 1 của đoạn hàng cuối cùng. Với \sig{L_VPU} = 0, VPU là đường thẳng và lệnh ghi C có hiệu lực ở cạnh clock cuối chu kỳ \sig{o_row_valid}; do đó tại lúc \sig{o_pe_done}, mọi kết quả đã nằm trong buffer C \\
-\end{reqtable}
+
+\paragraph{Giao tiếp}\label{tab:3-2}
+\begin{itemize}
+\item Chu kỳ có \sig{i_pe_start} = 1 gọi là chu kỳ 0. Array chốt M, N, K ở cạnh clock cuối chu kỳ 0. \sig{o_busy} = 1 từ chu kỳ 1 đến hết chu kỳ có \sig{o_pe_done} = 1
+\item Mỗi \sig{i_pe_start} được chấp nhận có đúng một \sig{o_pe_done}. \sig{i_pe_start} khi \sig{o_busy} = 1 bị bỏ qua
+\item Giá trị M, N, K được giả định hợp lệ (FSM đã kiểm tra): 1 ≤ M ≤ 32; N, K ∈ \{4, 8, …, 32\}. Với giá trị khác, hành vi không xác định
+\item \sig{o_a_rd_en} và \sig{o_b_rd_en} luôn bằng nhau. Khi bằng 1: \sig{o_a_rd_row} và \sig{o_b_rd_col} là bội của P; \sig{o_a_rd_k} = \sig{o_b_rd_k} < K. Khi bằng 0, các port địa chỉ có giá trị tùy ý
+\item SRAM trả dữ liệu đúng 1 chu kỳ sau chu kỳ có yêu cầu; array không dùng \sig{i_a_rd_data}, \sig{i_b_rd_data} ở chu kỳ không có yêu cầu trước đó. Lane ứng với hàng ≥ M hoặc cột ≥ N được phép mang giá trị bất kỳ, kể cả X trong mô phỏng
+\item Mọi port \sig{o_row_*} đều lấy từ thanh ghi. Khi \sig{o_row_valid} = 1: \sig{o_row_idx} < M; \sig{o_row_mask[c]} = 1 khi và chỉ khi $j_0 + c < N$. VPU phải nhận đoạn hàng ở đúng chu kỳ đó
+\item Không có hai đoạn hàng cho cùng một (i, $j_0$) trong một tác vụ; mọi (i, $j_0$) với i < M, $j_0$ < N đều xuất hiện
+\item \sig{o_pe_done} = 1 đúng \sig{L_VPU} + 1 chu kỳ sau chu kỳ có \sig{o_row_valid} = 1 của đoạn hàng cuối cùng. Với \sig{L_VPU} = 0, VPU là đường thẳng và lệnh ghi C có hiệu lực ở cạnh clock cuối chu kỳ \sig{o_row_valid}; do đó tại lúc \sig{o_pe_done}, mọi kết quả đã nằm trong buffer C
+\end{itemize}
+
 
 % ===================== 4 =====================
-\section{Vi kiến trúc}\label{sec:4}
 
-\begin{keypoint}
+\section{Đặc tả thanh ghi}
+Module không có thanh ghi ánh xạ MMIO. Cấu hình được nhận qua các tín hiệu đầu vào; trạng thái nội bộ, điều kiện chốt và reset được mô tả bên dưới.
+\section{Mô tả chức năng}
+\subsection{Tổ chức chức năng}\label{sec:4}
+
+
 Array gồm 4 khối: \textbf{bộ tuần tự tile} phát yêu cầu đọc và cờ điều khiển; \textbf{khối làm lệch} trễ lane r của A r chu kỳ và lane c của B c chu kỳ; \textbf{lưới PE} P×P; \textbf{khối xả} lấy kết quả từng hàng khi hàng đó vừa xong và xuất sang VPU. Mọi khối chạy theo nhịp cố định, không có bắt tay bên trong.
-\end{keypoint}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=1cm,y=1cm,scale=0.82,transform shape]
-\draw[brand,line width=1pt,rounded corners=3pt,fill=cream] (0,0) rectangle (16.6,8.2);
-\node[anchor=north west,font=\headfont\bfseries\small,text=brand] at (0.1,8.15) {gemm\_systolic\_array};
-\node[blk,minimum width=3.0cm,minimum height=2.0cm] (seq) at (2.0,5.6) {\textbf{gemm\_tile\_seq}\\[-1pt]\scriptsize đếm tile, k, bọt\\[-2pt]\scriptsize sinh địa chỉ, first/last\\[-2pt]\scriptsize metadata tile};
-\node[blkd,minimum width=1.6cm,minimum height=1.0cm] (sram) at (2.0,2.2) {SRAM\\[-2pt]\scriptsize (ngoài)};
-\node[blk,minimum width=2.4cm,minimum height=3.2cm] (skew) at (6.0,4.0) {\textbf{gemm\_skew}\\[-1pt]\scriptsize trễ cờ 1 chu kỳ\\[-2pt]\scriptsize A lane r: r tầng\\[-2pt]\scriptsize B lane c: c tầng};
-\node[blk,minimum width=3.4cm,minimum height=3.6cm] (grid) at (10.0,4.2) {};
-\node[font=\small\bfseries,anchor=north] at (10.0,5.95) {gemm\_pe\_grid};
-\foreach \r in {0,1,2}{\foreach \c in {0,1,2}{\node[blkn,minimum width=0.75cm,minimum height=0.6cm,inner sep=0pt,font=\tiny] at (9.0+\c*1.0,4.9-\r*0.85) {PE};}}
-\node[blk,minimum width=2.6cm,minimum height=2.4cm] (drain) at (14.4,4.2) {\textbf{gemm\_drain}\\[-1pt]\scriptsize FIFO metadata\\[-2pt]\scriptsize chọn hàng res\\[-2pt]\scriptsize thanh ghi đầu ra};
-\node[blk,minimum width=2.6cm,minimum height=0.9cm] (done) at (14.4,1.5) {\textbf{done/busy}\\[-2pt]\scriptsize trễ L\_VPU + 1};
-\draw[ctl] (seq.south) -- node[lbl,left]{rd\_en, i0, j0, k} (sram.north);
-\draw[dat] (sram.east) -| node[lbl,below,pos=0.3,text=data]{A, B vector} (skew.south);
-\draw[ctl] (seq.east |- 0,5.0) -- node[lbl,above]{row\_vld, first, last} (skew.west |- 0,5.0);
-\draw[dat] (skew.east |- 0,4.0) -- node[lbl,above,text=data]{a, cờ} node[lbl,below,text=data]{b} (grid.west |- 0,4.0);
-\draw[dat] (grid.east |- 0,4.6) -- node[lbl,above,text=data]{res P×P} (drain.west |- 0,4.6);
-\draw[ctl] (grid.east |- 0,3.6) -- node[lbl,below]{east vld/last} (drain.west |- 0,3.6);
-\draw[ctl] (seq.north) |- node[lbl,above,pos=0.75]{meta push: i0, j0, mask, rows, last\_tile} (14.4,7.5) -- (drain.north);
-\draw[ctl] (drain.south) -- node[lbl,right]{final} (done.north);
-\draw[dat] (drain.east) -- ++(0.6,0) node[right,font=\scriptsize,text=data,align=left]{o\_row\_*\\→ VPU};
-\draw[ctl] (done.east) -- ++(0.6,0) node[right,font=\scriptsize,text=brand,align=left]{o\_pe\_done\\o\_busy};
-\draw[ctl] (-0.6,6.6) node[left,font=\scriptsize]{i\_pe\_start} -- (seq.west |- 0,6.6);
-\draw[ctl] (-0.6,6.0) node[left,font=\scriptsize]{i\_matrix\_dim} -- (seq.west |- 0,6.0);
-\end{tikzpicture}
-\caption{Cấu trúc bên trong \sigc{gemm_systolic_array} (lưới vẽ 3×3 tượng trưng cho P×P)}\label{fig:4-1}
-\end{figure}
 
-\begin{spectable}{L{0.2}L{0.18}L{0.62}}{Module con}{tab:4-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
-\sig{gemm_tile_seq} & \sig{u_seq} & Chốt M, N, K; đếm tile và k; phát yêu cầu đọc A, B; sinh cờ \sig{row_vld}, \sig{first}, \sig{last}; đẩy metadata tile cho khối xả \\
-\sig{gemm_skew} & \sig{u_skew} & Trễ cờ điều khiển 1 chu kỳ cho khớp độ trễ SRAM; làm lệch A (cùng cờ) và B \\
-\sig{gemm_pe_grid} & \sig{u_grid} & P×P instance \sig{gemm_pe} nối thành lưới \\
-\sig{gemm_pe} & \sig{u_pe[r][c]} & Một phần tử xử lý: nhân-cộng, giữ \sig{acc}, \sig{res} \\
-\sig{gemm_drain} & \sig{u_drain} & FIFO metadata; chọn hàng \sig{res} đang sẵn sàng; thanh ghi đầu ra \sig{o_row_*}; cờ \sig{final} \\
-(logic trong top) & — & \sig{o_busy}; đường trễ \sig{L_VPU} + 1 từ \sig{final} tới \sig{o_pe_done} \\
+
+
+\begin{spectable}{|L{0.2}|L{0.18}|L{0.62}|}{Module con}{tab:4-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
+\sig{gemm_tile_seq} & \sig{u_seq} & Chốt M, N, K; đếm tile và k; phát yêu cầu đọc A, B; sinh cờ \sig{row_vld}, \sig{first}, \sig{last}; đẩy metadata tile cho khối xả \\\hline
+
+\sig{gemm_skew} & \sig{u_skew} & Trễ cờ điều khiển 1 chu kỳ cho khớp độ trễ SRAM; làm lệch A (cùng cờ) và B \\\hline
+
+\sig{gemm_pe_grid} & \sig{u_grid} & P×P instance \sig{gemm_pe} nối thành lưới \\\hline
+
+\sig{gemm_pe} & \sig{u_pe[r][c]} & Một phần tử xử lý: nhân-cộng, giữ \sig{acc}, \sig{res} \\\hline
+
+\sig{gemm_drain} & \sig{u_drain} & FIFO metadata; chọn hàng \sig{res} đang sẵn sàng; thanh ghi đầu ra \sig{o_row_*}; cờ \sig{final} \\\hline
+
+(logic trong top) & — & \sig{o_busy}; đường trễ \sig{L_VPU} + 1 từ \sig{final} tới \sig{o_pe_done} \\\hline
+
 \end{spectable}
 
 % ===================== 5 =====================
-\section{Module con}\label{sec:5}
+\subsection{Module con}\label{sec:5}
 
-\subsection{\texorpdfstring{\sigc{gemm_pe}}{gemm\_pe}}\label{sec:5.1}
+\subsubsection{\texorpdfstring{\sigc{gemm_pe}}{gemm\_pe}}\label{sec:5.1}
 
-\begin{spectable}{L{0.17}L{0.08}L{0.08}L{0.67}}{Port của \sigc{gemm_pe}}{tab:5-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-\sig{clk}, \sig{rst_n} & 1, 1 & In & Clock, reset \\
-\sig{i_clr} & 1 & In & Xóa đồng bộ (nối \sig{i_soft_clr}) \\
-\sig{i_a} & 8 & In & A, INT8 có dấu, từ PE bên trái (hoặc khối làm lệch) \\
-\sig{i_vld} & 1 & In & Cặp (a, b) của chu kỳ này hợp lệ \\
-\sig{i_first} & 1 & In & Phần tử k = 0 của tile \\
-\sig{i_last} & 1 & In & Phần tử k = K−1 của tile \\
-\sig{i_b} & 8 & In & B, INT8 có dấu, từ PE bên trên (hoặc khối làm lệch) \\
-\sig{o_a}, \sig{o_vld}, \sig{o_first}, \sig{o_last} & 8, 1, 1, 1 & Out & Bản trễ 1 chu kỳ của đầu vào tương ứng, sang PE bên phải \\
-\sig{o_b} & 8 & Out & Bản trễ 1 chu kỳ của \sig{i_b}, xuống PE bên dưới \\
-\sig{o_res} & 32 & Out & Thanh ghi kết quả \sig{res}: tổng của tile gần nhất đã xong \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_pe}}{tab:5-1}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+
+\sig{i_clr} & 1 & Input & Xóa đồng bộ các trạng thái điều khiển tại cạnh lên.\newline Được nối với tín hiệu soft clear của module cha. \\\hline
+
+\sig{i_a} & 8 & Input & Phần tử A kiểu INT8 có dấu, đến từ PE bên trái hoặc khối căn chỉnh.\newline Tham gia phép nhân khi i\_vld = 1. \\\hline
+
+\sig{i_vld} & 1 & Input & Báo cặp dữ liệu A/B hợp lệ trong chu kỳ này.\newline Khi bằng 1, PE cập nhật tích lũy tại cạnh lên. \\\hline
+
+\sig{i_first} & 1 & Input & Đánh dấu phần tử k = 0 của tile khi dữ liệu hợp lệ.\newline PE nạp tích mới thay vì cộng vào tích lũy cũ. \\\hline
+
+\sig{i_last} & 1 & Input & Đánh dấu phần tử k = K − 1 của tile khi dữ liệu hợp lệ.\newline PE chốt tổng cuối vào thanh ghi kết quả. \\\hline
+
+\sig{i_b} & 8 & Input & Phần tử B kiểu INT8 có dấu, đến từ PE phía trên hoặc khối căn chỉnh.\newline Tham gia phép nhân khi i\_vld = 1. \\\hline
+
+\sig{o_a} & 8 & Output & Bản trễ một chu kỳ của i\_a, truyền sang PE bên phải. \\\hline
+\sig{o_vld} & 1 & Output & Bản trễ một chu kỳ của i\_vld, truyền cùng dữ liệu A sang PE bên phải. \\\hline
+\sig{o_first} & 1 & Output & Bản trễ một chu kỳ của i\_first, truyền sang PE bên phải để đánh dấu đầu tile. \\\hline
+\sig{o_last} & 1 & Output & Bản trễ một chu kỳ của i\_last, truyền sang PE bên phải để đánh dấu cuối tile. \\\hline
+
+\sig{o_b} & 8 & Output & Bản trễ một chu kỳ của i\_b, truyền xuống PE bên dưới. \\\hline
+
+\sig{o_res} & 32 & Output & Tổng INT32 của tile gần nhất đã hoàn tất.\newline Lấy từ thanh ghi res và giữ nguyên tới lần chốt kết quả tile tiếp theo. \\\hline
+
 \end{spectable}
 
 \eqbox{\[
@@ -192,13 +195,16 @@ sum = \big(i\_first\ ?\ 0 : acc\big) + \text{sext}_{32}\big(i\_a \times i\_b\big
 \end{aligned}
 \]}
 
-\begin{reqtable}{\sigc{gemm_pe}}{tab:5-2}
-PE-01 & Phép nhân là INT8 × INT8 có dấu cho tích 16 bit có dấu, mở rộng dấu lên 32 bit; phép cộng 32 bit wrap mod $2^{32}$. Toàn bộ nhân-cộng nằm trong một chu kỳ (tổ hợp từ \sig{i_a}, \sig{i_b}, \sig{acc} tới thanh ghi) \\
-PE-02 & \sig{acc} và \sig{res} chỉ thay đổi khi \sig{i_vld} = 1 (và \sig{i_last} = 1 với \sig{res}). \sig{i_first} = 1 nạp tích mới, không cộng với \sig{acc} cũ; không có chu kỳ xóa \\
-PE-03 & \sig{o_a}, \sig{o_b} cập nhật mọi chu kỳ (được phép chặn khi \sig{i_vld} = 0 để tiết kiệm năng lượng). \sig{o_vld}, \sig{o_first}, \sig{o_last} cập nhật mọi chu kỳ \\
-PE-04 & \sig{rst_n} = 0 hoặc \sig{i_clr} = 1: \sig{o_vld}, \sig{o_first}, \sig{o_last} về 0. \sig{acc}, \sig{res}, \sig{o_a}, \sig{o_b} không bắt buộc reset \\
-PE-05 & \sig{o_res} nối thẳng từ thanh ghi \sig{res} \\
-\end{reqtable}
+
+\paragraph{\sigc{gemm_pe}}\label{tab:5-2}
+\begin{itemize}
+\item Phép nhân là INT8 × INT8 có dấu cho tích 16 bit có dấu, mở rộng dấu lên 32 bit; phép cộng 32 bit wrap mod $2^{32}$. Toàn bộ nhân-cộng nằm trong một chu kỳ (tổ hợp từ \sig{i_a}, \sig{i_b}, \sig{acc} tới thanh ghi)
+\item \sig{acc} và \sig{res} chỉ thay đổi khi \sig{i_vld} = 1 (và \sig{i_last} = 1 với \sig{res}). \sig{i_first} = 1 nạp tích mới, không cộng với \sig{acc} cũ; không có chu kỳ xóa
+\item \sig{o_a}, \sig{o_b} cập nhật mọi chu kỳ (được phép chặn khi \sig{i_vld} = 0 để tiết kiệm năng lượng). \sig{o_vld}, \sig{o_first}, \sig{o_last} cập nhật mọi chu kỳ
+\item \sig{rst_n} = 0 hoặc \sig{i_clr} = 1: \sig{o_vld}, \sig{o_first}, \sig{o_last} về 0. \sig{acc}, \sig{res}, \sig{o_a}, \sig{o_b} không bắt buộc reset
+\item \sig{o_res} nối thẳng từ thanh ghi \sig{res}
+\end{itemize}
+
 
 \begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
 // Tham khảo (SystemVerilog)
@@ -217,100 +223,174 @@ always_ff @(posedge clk) begin
 end
 \end{Verbatim}
 
-\subsection{\texorpdfstring{\sigc{gemm_tile_seq}}{gemm\_tile\_seq}}\label{sec:5.2}
+\subsubsection{\texorpdfstring{\sigc{gemm_tile_seq}}{gemm\_tile\_seq}}\label{sec:5.2}
 
-\begin{spectable}{L{0.2}L{0.13}L{0.08}L{0.59}}{Port của \sigc{gemm_tile_seq}}{tab:5-3}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-\sig{clk}, \sig{rst_n}, \sig{i_clr} & 1 & In & \\
-\sig{i_start} & 1 & In & Nối \sig{i_pe_start} \\
-\sig{i_matrix_dim} & 24 & In & [7:0] M, [15:8] N, [23:16] K \\
-\sig{o_rd_en} & 1 & Out & Nối \sig{o_a_rd_en} và \sig{o_b_rd_en} \\
-\sig{o_rd_i0}, \sig{o_rd_j0}, \sig{o_rd_k} & 5 mỗi port & Out & Nối \sig{o_a_rd_row}, \sig{o_b_rd_col}, \sig{o_a_rd_k} = \sig{o_b_rd_k} \\
-\sig{o_row_vld} & P & Out & Bit r = 1 khi $i_0 + r < M$ (chỉ có nghĩa khi \sig{o_rd_en} = 1) \\
-\sig{o_first}, \sig{o_last} & 1, 1 & Out & k = 0, k = K−1 (chỉ có nghĩa khi \sig{o_rd_en} = 1) \\
-\sig{o_meta_push} & 1 & Out & = \sig{o_rd_en} ∧ (k = K−1): đẩy metadata của tile đang phát \\
-\sig{o_meta_i0}, \sig{o_meta_j0} & 5, 5 & Out & $i_0$, $j_0$ của tile \\
-\sig{o_meta_mask} & P & Out & Bit c = 1 khi $j_0 + c < N$ \\
-\sig{o_meta_rows} & $\lceil\log_2(P{+}1)\rceil$ & Out & Số hàng hợp lệ = min(P, M − $i_0$), 1 … P \\
-\sig{o_meta_last_tile} & 1 & Out & Tile đang phát là tile cuối \\
-\sig{o_issuing} & 1 & Out & Đang trong pha phát (trạng thái ISSUE) \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_tile_seq}}{tab:5-3}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{i_clr} & 1 & Input & Xóa đồng bộ các trạng thái điều khiển tại cạnh lên.\newline Được nối với tín hiệu soft clear của module cha. \\\hline
+
+\sig{i_start} & 1 & Input & Xung một chu kỳ bắt đầu duyệt tile khi bộ tuần tự đang IDLE.\newline Chốt kích thước ma trận tại cạnh lên. \\\hline
+
+\sig{i_matrix_dim} & 24 & Input & Kích thước job.\newline Bit [7:0]: M; [15:8]: N; [23:16]: K.\newline M từ 1 đến 32; N và K là bội của 4, từ 4 đến 32.\newline Phải hợp lệ khi bắt đầu lượt tính. \\\hline
+
+\sig{o_rd_en} & 1 & Output & Cho phép đọc đồng thời vector A và B trong chu kỳ này.\newline Được nối tới cả hai read enable của SRAM. \\\hline
+
+\sig{o_rd_i0} & 5 & Output & Hàng đầu i0 của tile đang đọc; là bội của P.\newline Hợp lệ khi o\_rd\_en = 1. \\\hline
+\sig{o_rd_j0} & 5 & Output & Cột đầu j0 của tile đang đọc; là bội của P.\newline Hợp lệ khi o\_rd\_en = 1. \\\hline
+\sig{o_rd_k} & 5 & Output & Chỉ số k chung cho cột A và hàng B đang đọc, từ 0 đến K − 1.\newline Hợp lệ khi o\_rd\_en = 1. \\\hline
+
+\sig{o_row_vld} & P & Output & Mặt nạ hàng hợp lệ.\newline Bit r = 1 khi i0 + r < M; chỉ có nghĩa cùng o\_rd\_en = 1. \\\hline
+
+\sig{o_first} & 1 & Output & Đánh dấu k = 0, phần tử đầu tile.\newline Chỉ có nghĩa khi o\_rd\_en = 1. \\\hline
+\sig{o_last} & 1 & Output & Đánh dấu k = K − 1, phần tử cuối tile.\newline Chỉ có nghĩa khi o\_rd\_en = 1. \\\hline
+
+\sig{o_meta_push} & 1 & Output & Xung đẩy metadata của tile vào khối xả.\newline Bằng 1 khi o\_rd\_en = 1 và k = K − 1. \\\hline
+
+\sig{o_meta_i0} & 5 & Output & Hàng đầu i0 của tile.\newline Metadata được lấy mẫu khi o\_meta\_push = 1. \\\hline
+\sig{o_meta_j0} & 5 & Output & Cột đầu j0 của tile.\newline Metadata được lấy mẫu khi o\_meta\_push = 1. \\\hline
+
+\sig{o_meta_mask} & P & Output & Mặt nạ cột hợp lệ của tile.\newline Bit c = 1 khi j0 + c < N; lấy mẫu khi o\_meta\_push = 1. \\\hline
+
+\sig{o_meta_rows} & $\lceil\log_2(P{+}1)\rceil$ & Output & Số hàng hợp lệ của tile, bằng min(P, M − i0), từ 1 đến P.\newline Lấy mẫu cùng o\_meta\_push. \\\hline
+
+\sig{o_meta_last_tile} & 1 & Output & Đánh dấu metadata thuộc tile cuối của tác vụ.\newline Lấy mẫu cùng o\_meta\_push. \\\hline
+
+\sig{o_issuing} & 1 & Output & Báo bộ tuần tự đang ở trạng thái ISSUE và phát các lượt đọc của tile. \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{\sigc{gemm_tile_seq}}{tab:5-4}
-SEQ-01 & Hai trạng thái: IDLE và ISSUE. \sig{i_start} ở IDLE: chốt M, N, K; tính $T_M$, $T_N$, $N_T = T_M T_N$ và $I = \max(K, P)$; đặt tile n = 0, $(t_i, t_j)$ = (0, 0), bộ đếm chu kỳ trong tile \sig{cnt} = 0; sang ISSUE \\
-SEQ-02 & Trong ISSUE, mỗi chu kỳ là một “khe” \sig{cnt} = 0 … I−1 của tile n. Khe \sig{cnt} < K phát yêu cầu đọc k = \sig{cnt}; khe \sig{cnt} ≥ K là bọt (\sig{o_rd_en} = 0). Sau khe I−1: sang tile kế tiếp theo thứ tự $t_j$ chạy trong, $t_i$ chạy ngoài; sau tile $N_T - 1$: về IDLE \\
-SEQ-03 & Mọi output là hàm của thanh ghi trạng thái (không phụ thuộc tổ hợp vào input trong cùng chu kỳ). $i_0 = t_i P$, $j_0 = t_j P$ \\
-SEQ-04 & Hệ quả: yêu cầu đọc k của tile n nằm ở chu kỳ $S_n + k$, với $S_n = 1 + n\cdot I$ \\
-\end{reqtable}
 
-\subsection{\texorpdfstring{\sigc{gemm_skew}}{gemm\_skew}}\label{sec:5.3}
+\paragraph{\sigc{gemm_tile_seq}}\label{tab:5-4}
+\begin{itemize}
+\item Hai trạng thái: IDLE và ISSUE. \sig{i_start} ở IDLE: chốt M, N, K; tính $T_M$, $T_N$, $N_T = T_M T_N$ và $I = \max(K, P)$; đặt tile n = 0, $(t_i, t_j)$ = (0, 0), bộ đếm chu kỳ trong tile \sig{cnt} = 0; sang ISSUE
+\item Trong ISSUE, mỗi chu kỳ là một “khe” \sig{cnt} = 0 … I−1 của tile n. Khe \sig{cnt} < K phát yêu cầu đọc k = \sig{cnt}; khe \sig{cnt} ≥ K là bọt (\sig{o_rd_en} = 0). Sau khe I−1: sang tile kế tiếp theo thứ tự $t_j$ chạy trong, $t_i$ chạy ngoài; sau tile $N_T - 1$: về IDLE
+\item Mọi output là hàm của thanh ghi trạng thái (không phụ thuộc tổ hợp vào input trong cùng chu kỳ). $i_0 = t_i P$, $j_0 = t_j P$
+\item Hệ quả: yêu cầu đọc k của tile n nằm ở chu kỳ $S_n + k$, với $S_n = 1 + n\cdot I$
+\end{itemize}
 
-\begin{spectable}{L{0.22}L{0.1}L{0.08}L{0.6}}{Port của \sigc{gemm_skew}}{tab:5-5}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-\sig{clk}, \sig{rst_n}, \sig{i_clr} & 1 & In & \\
-\sig{i_rd_en}, \sig{i_row_vld}, \sig{i_first}, \sig{i_last} & 1, P, 1, 1 & In & Từ \sig{gemm_tile_seq}, cùng chu kỳ với yêu cầu đọc \\
-\sig{i_a_data}, \sig{i_b_data} & 8P, 8P & In & Từ SRAM, chu kỳ sau yêu cầu \\
-\sig{o_west_a} & 8P & Out & Lane r → \sig{i_a} của PE(r, 0) \\
-\sig{o_west_vld}, \sig{o_west_first}, \sig{o_west_last} & P mỗi port & Out & Bit r → \sig{i_vld}, \sig{i_first}, \sig{i_last} của PE(r, 0) \\
-\sig{o_north_b} & 8P & Out & Lane c → \sig{i_b} của PE(0, c) \\
+
+\subsubsection{\texorpdfstring{\sigc{gemm_skew}}{gemm\_skew}}\label{sec:5.3}
+
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_skew}}{tab:5-5}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{i_clr} & 1 & Input & Xóa đồng bộ các trạng thái điều khiển tại cạnh lên.\newline Được nối với tín hiệu soft clear của module cha. \\\hline
+
+\sig{i_rd_en} & 1 & Input & Enable đọc do bộ tuần tự phát.\newline Cùng chu kỳ với yêu cầu SRAM; dùng để căn cờ hợp lệ với dữ liệu về ở chu kỳ sau. \\\hline
+\sig{i_row_vld} & P & Input & Mặt nạ hàng hợp lệ do bộ tuần tự phát cùng yêu cầu đọc.\newline Bit r = 0 chặn phép tích lũy của hàng PE tương ứng. \\\hline
+\sig{i_first} & 1 & Input & Cờ đầu tile do bộ tuần tự phát cùng yêu cầu đọc.\newline Được căn trễ với dữ liệu A trước khi đưa vào PE. \\\hline
+\sig{i_last} & 1 & Input & Cờ cuối tile do bộ tuần tự phát cùng yêu cầu đọc.\newline Được căn trễ với dữ liệu A trước khi đưa vào PE. \\\hline
+
+\sig{i_a_data} & 8P & Input & Vector A gồm P byte từ SRAM, hợp lệ một chu kỳ sau yêu cầu đọc.\newline Lane r được làm trễ thêm r chu kỳ trước khi vào hàng PE r. \\\hline
+\sig{i_b_data} & 8P & Input & Vector B gồm P byte từ SRAM, hợp lệ một chu kỳ sau yêu cầu đọc.\newline Lane c được làm trễ thêm c chu kỳ trước khi vào cột PE c. \\\hline
+
+\sig{o_west_a} & 8P & Output & Vector A đã căn chỉnh.\newline Lane r cấp dữ liệu cho PE(r, 0), trễ thêm r chu kỳ so với dữ liệu SRAM. \\\hline
+
+\sig{o_west_vld} & P & Output & Cờ hợp lệ đã căn chỉnh cho các hàng PE.\newline Bit r đi cùng lane A của PE(r, 0). \\\hline
+\sig{o_west_first} & P & Output & Cờ đầu tile đã căn chỉnh.\newline Bit r đi cùng lane A của PE(r, 0). \\\hline
+\sig{o_west_last} & P & Output & Cờ cuối tile đã căn chỉnh.\newline Bit r đi cùng lane A của PE(r, 0). \\\hline
+
+\sig{o_north_b} & 8P & Output & Vector B đã căn chỉnh.\newline Lane c cấp dữ liệu cho PE(0, c), trễ thêm c chu kỳ so với dữ liệu SRAM. \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{\sigc{gemm_skew}}{tab:5-6}
-SKW-01 & Tầng căn chỉnh: một thanh ghi chốt \{\sig{i_rd_en} ∧ \sig{i_row_vld[r]}, \sig{i_first}, \sig{i_last}\}, cho cờ của mỗi hàng r ở chu kỳ sau yêu cầu, cùng lúc với dữ liệu SRAM. Thanh ghi này reset/clear về 0 \\
-SKW-02 & Lane r của A cùng ba cờ của hàng r đi qua đúng r thanh ghi nối tiếp; lane 0 không qua thanh ghi nào. Thanh ghi cờ reset/clear về 0 \\
-SKW-03 & Lane c của B đi qua đúng c thanh ghi nối tiếp; lane 0 không qua thanh ghi nào \\
-SKW-04 & Tổng số tầng: $P(P-1)/2$ cho A (mỗi tầng 8 + 3 bit) và $P(P-1)/2$ cho B (mỗi tầng 8 bit) \\
-\end{reqtable}
 
-\subsection{\texorpdfstring{\sigc{gemm_pe_grid}}{gemm\_pe\_grid}}\label{sec:5.4}
+\paragraph{\sigc{gemm_skew}}\label{tab:5-6}
+\begin{itemize}
+\item Tầng căn chỉnh: một thanh ghi chốt \{\sig{i_rd_en} ∧ \sig{i_row_vld[r]}, \sig{i_first}, \sig{i_last}\}, cho cờ của mỗi hàng r ở chu kỳ sau yêu cầu, cùng lúc với dữ liệu SRAM. Thanh ghi này reset/clear về 0
+\item Lane r của A cùng ba cờ của hàng r đi qua đúng r thanh ghi nối tiếp; lane 0 không qua thanh ghi nào. Thanh ghi cờ reset/clear về 0
+\item Lane c của B đi qua đúng c thanh ghi nối tiếp; lane 0 không qua thanh ghi nào
+\item Tổng số tầng: $P(P-1)/2$ cho A (mỗi tầng 8 + 3 bit) và $P(P-1)/2$ cho B (mỗi tầng 8 bit)
+\end{itemize}
 
-\begin{reqtable}{\sigc{gemm_pe_grid}}{tab:5-7}
-GRD-01 & PE(r, c), 0 ≤ r, c < P. Đầu vào A và cờ của PE(r, 0) lấy từ \sig{o_west_*} lane r; của PE(r, c > 0) lấy từ \sig{o_a}, \sig{o_vld}, \sig{o_first}, \sig{o_last} của PE(r, c−1) \\
-GRD-02 & \sig{i_b} của PE(0, c) lấy từ \sig{o_north_b} lane c; của PE(r > 0, c) lấy từ \sig{o_b} của PE(r−1, c) \\
-GRD-03 & Output của lưới: \sig{o_res} của mọi PE, xếp \sig{res_bus[(r·P + c)·32 +: 32]}; \sig{o_vld} và \sig{o_last} của PE(r, P−1) cho mỗi r (\sig{east_vld[r]}, \sig{east_last[r]}) \\
-GRD-04 & \sig{o_a} của cột cuối và \sig{o_b} của hàng cuối không nối đi đâu (công cụ tổng hợp tự bỏ) \\
-\end{reqtable}
 
-\subsection{\texorpdfstring{\sigc{gemm_drain}}{gemm\_drain}}\label{sec:5.5}
+\subsubsection{\texorpdfstring{\sigc{gemm_pe_grid}}{gemm\_pe\_grid}}\label{sec:5.4}
 
-\begin{spectable}{L{0.22}L{0.1}L{0.08}L{0.6}}{Port của \sigc{gemm_drain}}{tab:5-8}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-\sig{clk}, \sig{rst_n}, \sig{i_clr} & 1 & In & \\
-\sig{i_res_bus} & 32P² & In & \sig{res} của mọi PE \\
-\sig{i_east_vld}, \sig{i_east_last} & P, P & In & \sig{o_vld}, \sig{o_last} của PE(r, P−1) \\
-\sig{i_meta_*} & — & In & Từ \sig{gemm_tile_seq}: push, i0, j0, mask, rows, last\_tile \\
-\sig{o_row_*} & như bảng~\ref{tab:3-1} & Out & Luồng hàng sang VPU \\
-\sig{o_final} & 1 & Out & = 1 cùng chu kỳ với \sig{o_row_valid} của đoạn hàng cuối cùng \\
+
+\paragraph{\sigc{gemm_pe_grid}}\label{tab:5-7}
+\begin{itemize}
+\item PE(r, c), 0 ≤ r, c < P. Đầu vào A và cờ của PE(r, 0) lấy từ \sig{o_west_*} lane r; của PE(r, c > 0) lấy từ \sig{o_a}, \sig{o_vld}, \sig{o_first}, \sig{o_last} của PE(r, c−1)
+\item \sig{i_b} của PE(0, c) lấy từ \sig{o_north_b} lane c; của PE(r > 0, c) lấy từ \sig{o_b} của PE(r−1, c)
+\item Output của lưới: \sig{o_res} của mọi PE, xếp \sig{res_bus[(r·P + c)·32 +: 32]}; \sig{o_vld} và \sig{o_last} của PE(r, P−1) cho mỗi r (\sig{east_vld[r]}, \sig{east_last[r]})
+\item \sig{o_a} của cột cuối và \sig{o_b} của hàng cuối không nối đi đâu (công cụ tổng hợp tự bỏ)
+\end{itemize}
+
+
+\subsubsection{\texorpdfstring{\sigc{gemm_drain}}{gemm\_drain}}\label{sec:5.5}
+
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_drain}}{tab:5-8}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{i_clr} & 1 & Input & Xóa đồng bộ các trạng thái điều khiển tại cạnh lên.\newline Được nối với tín hiệu soft clear của module cha. \\\hline
+
+\sig{i_res_bus} & 32P² & Input & Bus chứa kết quả INT32 của mọi PE.\newline Phần tử PE(r, c) nằm tại bit [(r·P+c)·32 +: 32]. \\\hline
+
+\sig{i_east_vld} & P & Input & Vector cờ hợp lệ tại cột PE cuối.\newline Bit r lấy từ o\_vld của PE(r, P−1). \\\hline
+\sig{i_east_last} & P & Input & Vector cờ cuối tile tại cột PE cuối.\newline Bit r lấy từ o\_last của PE(r, P−1); kết hợp với east valid để kích hoạt xả hàng r. \\\hline
+
+\sig{i_meta_push} & 1 & Input & Xung nhận metadata của tile vào FIFO.\newline Các trường metadata còn lại được lấy mẫu cùng chu kỳ. \\\hline
+\sig{i_meta_i0} & 5 & Input & Hàng đầu của tile được xả.\newline Hợp lệ khi i\_meta\_push = 1. \\\hline
+\sig{i_meta_j0} & 5 & Input & Cột đầu của tile được xả; là bội của P.\newline Hợp lệ khi i\_meta\_push = 1. \\\hline
+\sig{i_meta_mask} & P & Input & Mặt nạ cột hợp lệ; bit c = 1 khi cột j0 + c thuộc ma trận kết quả.\newline Lấy mẫu cùng i\_meta\_push. \\\hline
+\sig{i_meta_rows} & $\lceil\log_2(P+1)\rceil$ & Input & Số hàng hợp lệ cần xả, từ 1 đến P.\newline Lấy mẫu cùng i\_meta\_push. \\\hline
+\sig{i_meta_last_tile} & 1 & Input & Đánh dấu metadata của tile cuối tác vụ.\newline Lấy mẫu cùng i\_meta\_push. \\\hline
+
+\sig{o_row_valid} & 1 & Output & Báo đoạn hàng đã đăng ký ở đầu ra và hợp lệ trong chu kỳ này.\newline Bên nhận phải nhận ngay; không có ready. \\\hline
+\sig{o_row_idx} & 5 & Output & Chỉ số hàng của đoạn kết quả.\newline Hợp lệ cùng o\_row\_valid. \\\hline
+\sig{o_row_col} & 5 & Output & Cột đầu của đoạn kết quả, là bội của P.\newline Hợp lệ cùng o\_row\_valid. \\\hline
+\sig{o_row_data} & 32P & Output & P phần tử INT32 của đoạn hàng.\newline Lane c ở bit [32c +: 32]; chỉ dùng các lane có mask bằng 1. \\\hline
+\sig{o_row_mask} & P & Output & Mặt nạ lane được phép ghi.\newline Bit c = 1 cho biết phần tử c thuộc miền hợp lệ; đi cùng o\_row\_valid. \\\hline
+
+\sig{o_final} & 1 & Output & Xung một chu kỳ báo đoạn hàng cuối của tile cuối đang được xuất.\newline Cùng chu kỳ với o\_row\_valid của đoạn hàng đó. \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{\sigc{gemm_drain}}{tab:5-9}
-DRN-01 & Tín hiệu kích hoạt của hàng r: \sig{trig[r] = i_east_vld[r] ∧ i_east_last[r]}. Nó bằng 1 đúng ở chu kỳ đầu tiên mà \sig{res} của cả hàng r đã chứa kết quả của tile vừa xong. Tại mỗi chu kỳ có tối đa một bit \sig{trig} bằng 1 \\
-DRN-02 & FIFO metadata sâu 2 mục: đẩy khi \sig{i_meta_push}, lấy ra khi \sig{trig[0]} = 1. Mục vừa lấy ra trở thành “tile đang xả” và được giữ tới lần \sig{trig[0]} kế tiếp \\
-DRN-03 & Khi \sig{trig[r]} = 1 (với r = 0 dùng mục vừa lấy ra): ở cạnh clock cuối chu kỳ đó, thanh ghi đầu ra nạp \sig{o_row_valid} = 1, \sig{o_row_idx} = $i_0 + r$, \sig{o_row_col} = $j_0$, \sig{o_row_data} = \sig{res} của hàng r, \sig{o_row_mask} = mask của tile, \sig{o_final} = (\sig{last_tile} ∧ r = \sig{rows} − 1). Không có \sig{trig}: \sig{o_row_valid} = \sig{o_final} = 0 \\
-DRN-04 & Hàng không hợp lệ ($i_0 + r ≥ M$) có \sig{vld} = 0 trong mọi PE của nó, nên \sig{trig[r]} không bao giờ bật cho hàng đó: không cần lọc thêm \\
-DRN-05 & Mux chọn hàng là P:1 trên P×32 bit, điều khiển bởi \sig{trig} (one-hot) \\
-\end{reqtable}
 
-\subsection{\texorpdfstring{\sigc{o_busy}}{o\_busy} và \texorpdfstring{\sigc{o_pe_done}}{o\_pe\_done}}\label{sec:5.6}
+\paragraph{\sigc{gemm_drain}}\label{tab:5-9}
+\begin{itemize}
+\item Tín hiệu kích hoạt của hàng r: \sig{trig[r] = i_east_vld[r] ∧ i_east_last[r]}. Nó bằng 1 đúng ở chu kỳ đầu tiên mà \sig{res} của cả hàng r đã chứa kết quả của tile vừa xong. Tại mỗi chu kỳ có tối đa một bit \sig{trig} bằng 1
+\item FIFO metadata sâu 2 mục: đẩy khi \sig{i_meta_push}, lấy ra khi \sig{trig[0]} = 1. Mục vừa lấy ra trở thành “tile đang xả” và được giữ tới lần \sig{trig[0]} kế tiếp
+\item Khi \sig{trig[r]} = 1 (với r = 0 dùng mục vừa lấy ra): ở cạnh clock cuối chu kỳ đó, thanh ghi đầu ra nạp \sig{o_row_valid} = 1, \sig{o_row_idx} = $i_0 + r$, \sig{o_row_col} = $j_0$, \sig{o_row_data} = \sig{res} của hàng r, \sig{o_row_mask} = mask của tile, \sig{o_final} = (\sig{last_tile} ∧ r = \sig{rows} − 1). Không có \sig{trig}: \sig{o_row_valid} = \sig{o_final} = 0
+\item Hàng không hợp lệ ($i_0 + r ≥ M$) có \sig{vld} = 0 trong mọi PE của nó, nên \sig{trig[r]} không bao giờ bật cho hàng đó: không cần lọc thêm
+\item Mux chọn hàng là P:1 trên P×32 bit, điều khiển bởi \sig{trig} (one-hot)
+\end{itemize}
 
-\begin{reqtable}{Logic trong top}{tab:5-10}
-TOP-01 & \sig{o_pe_done} = \sig{o_final} trễ đúng \sig{L_VPU} + 1 chu kỳ (đường trễ thanh ghi, clear về 0) \\
-TOP-02 & \sig{o_busy}: đặt 1 ở cạnh clock cuối chu kỳ có \sig{i_pe_start} (khi đang rảnh), về 0 ở cạnh clock cuối chu kỳ có \sig{o_pe_done} \\
-\end{reqtable}
+
+\subsubsection{\texorpdfstring{\sigc{o_busy}}{o\_busy} và \texorpdfstring{\sigc{o_pe_done}}{o\_pe\_done}}\label{sec:5.6}
+
+
+\paragraph{Logic trong top}\label{tab:5-10}
+\begin{itemize}
+\item \sig{o_pe_done} = \sig{o_final} trễ đúng \sig{L_VPU} + 1 chu kỳ (đường trễ thanh ghi, clear về 0)
+\item \sig{o_busy}: đặt 1 ở cạnh clock cuối chu kỳ có \sig{i_pe_start} (khi đang rảnh), về 0 ở cạnh clock cuối chu kỳ có \sig{o_pe_done}
+\end{itemize}
+
 
 % ===================== 6 =====================
-\section{Timing}\label{sec:6}
+\subsection{Timing}\label{sec:6}
 
-\begin{keypoint}
+
 Mọi sự kiện có thời điểm cố định, tính được từ M, N, K, P và \sig{L_VPU}. Các công thức dưới đây là quy định: RTL phải khớp đúng từng chu kỳ (kiểm bằng \sig{gemm_systolic_array_model.py}).
-\end{keypoint}
 
-\begin{spectable}{L{0.38}L{0.62}}{Thời điểm các sự kiện (chu kỳ 0 = chu kỳ có \sigc{i_pe_start})}{tab:6-1}{\textbf{Sự kiện} & \textbf{Chu kỳ}}
-Khoảng cách giữa hai tile & $I = \max(K, P)$ \\
-Yêu cầu đọc k của tile n & $S_n + k$, với $S_n = 1 + n I$ \\
-Dữ liệu SRAM của yêu cầu đó & $S_n + k + 1$ \\
-PE(r, c) nhận phần tử k của tile n & $S_n + 1 + k + r + c$ \\
-\sig{res} của PE(r, c) chứa tile n từ & $S_n + 1 + K + r + c$ \\
-\sig{trig[r]} của tile n & $S_n + K + P + r$ \\
-\sig{o_row_valid} của hàng r, tile n & $D_n(r) = S_n + K + P + 1 + r$ \\
-\sig{o_pe_done} & $D_{last} + L_{VPU} + 1 = (N_T - 1) I + K + P + r_{last} + L_{VPU} + 3$ \\
+
+\begin{spectable}{|L{0.38}|L{0.62}|}{Thời điểm các sự kiện (chu kỳ 0 = chu kỳ có \sigc{i_pe_start})}{tab:6-1}{\textbf{Sự kiện} & \textbf{Chu kỳ}}
+Khoảng cách giữa hai tile & $I = \max(K, P)$ \\\hline
+
+Yêu cầu đọc k của tile n & $S_n + k$, với $S_n = 1 + n I$ \\\hline
+
+Dữ liệu SRAM của yêu cầu đó & $S_n + k + 1$ \\\hline
+
+PE(r, c) nhận phần tử k của tile n & $S_n + 1 + k + r + c$ \\\hline
+
+\sig{res} của PE(r, c) chứa tile n từ & $S_n + 1 + K + r + c$ \\\hline
+
+\sig{trig[r]} của tile n & $S_n + K + P + r$ \\\hline
+
+\sig{o_row_valid} của hàng r, tile n & $D_n(r) = S_n + K + P + 1 + r$ \\\hline
+
+\sig{o_pe_done} & $D_{last} + L_{VPU} + 1 = (N_T - 1) I + K + P + r_{last} + L_{VPU} + 3$ \\\hline
+
 \end{spectable}
 
 Trong đó $N_T = \lceil M/P\rceil\lceil N/P\rceil$ và $r_{last} = \min(P, M - (T_M-1)P) - 1$ là chỉ số hàng hợp lệ cuối của tile cuối.
@@ -323,86 +403,66 @@ Trong đó $N_T = \lceil M/P\rceil\lceil N/P\rceil$ và $r_{last} = \min(P, M - 
 \end{itemize}
 \end{notebox}
 
-\begin{spectable}{L{0.3}L{0.17}L{0.17}L{0.18}L{0.18}}{Số chu kỳ từ \sigc{i_pe_start} tới \sigc{o_pe_done}}{tab:6-2}{\textbf{(M, N, K)} & \textbf{P = 4, L = 0} & \textbf{P = 8, L = 0} & \textbf{P = 4, L = 4} & \textbf{P = 8, L = 4}}
-(32, 32, 32) & 2058 & 530 & 2062 & 534 \\
-(20, 12, 8) & 130 & 62 & 134 & 66 \\
-(1, 4, 4) & 11 & 15 & 15 & 19 \\
-(2, 4, 4), P = 2 (ví dụ minh họa) & \multicolumn{4}{l}{14} \\
+\begin{spectable}{|L{0.3}|L{0.17}|L{0.17}|L{0.18}|L{0.18}|}{Số chu kỳ từ \sigc{i_pe_start} tới \sigc{o_pe_done}}{tab:6-2}{\textbf{(M, N, K)} & \textbf{P = 4, L = 0} & \textbf{P = 8, L = 0} & \textbf{P = 4, L = 4} & \textbf{P = 8, L = 4}}
+(32, 32, 32) & 2058 & 530 & 2062 & 534 \\\hline
+
+(20, 12, 8) & 130 & 62 & 134 & 66 \\\hline
+
+(1, 4, 4) & 11 & 15 & 15 & 19 \\\hline
+
+(2, 4, 4), P = 2 (ví dụ minh họa) & \multicolumn{4}{l}{14} \\\hline
+
 \end{spectable}
 
-\subsection{Dạng sóng minh họa}
-Ví dụ M = 2, N = 4, K = 4 với P = 2, \sig{L_VPU} = 0 (cùng ví dụ của tài liệu thuật toán): 2 tile, I = 4.
+\subsection{Reset và soft clear}\label{sec:7}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=0.95cm,y=0.62cm]
-\newcommand{\sname}[2]{\node[anchor=east,font=\scriptsize\ttfamily] at (-0.2,#1) {#2};}
-% clock grid
-\foreach \t in {0,...,15}{\draw[muted!40] (\t,0.6) -- (\t,-10.4);}
-\foreach \t in {0,...,14}{\node[font=\tiny,text=muted] at (\t+0.5,0.9) {\t};}
-\node[anchor=east,font=\scriptsize] at (-0.2,0.9) {chu kỳ};
-% helper: pulse high from a to b at row y
-\newcommand{\hi}[3]{\draw[brand,line width=0.9pt] (#1,#3) -- (#1,#3+0.45) -- (#2,#3+0.45) -- (#2,#3);}
-\newcommand{\lo}[3]{\draw[brand,line width=0.9pt] (#1,#3) -- (#2,#3);}
-\newcommand{\bus}[4]{\draw[data,line width=0.7pt,fill=datasoft] (#1,#3) -- (#1+0.1,#3+0.22) -- (#2-0.1,#3+0.22) -- (#2,#3) -- (#2-0.1,#3-0.22) -- (#1+0.1,#3-0.22) -- cycle; \node[font=\tiny] at ({(#1+#2)/2},#3) {#4};}
-\sname{0}{i\_pe\_start} \lo{0}{0}{0} \hi{0}{1}{-0.2} \lo{1}{15}{-0.2}
-\sname{-1.3}{o\_busy} \lo{0}{1}{-1.5} \hi{1}{15}{-1.5}
-\sname{-2.6}{o\_a/b\_rd\_en} \lo{0}{1}{-2.8} \hi{1}{9}{-2.8} \lo{9}{15}{-2.8}
-\sname{-3.9}{o\_rd\_k}
-\foreach \k [count=\i from 1] in {0,1,2,3}{\bus{\i}{\i+1}{-3.9}{\k}}
-\foreach \k [count=\i from 5] in {0,1,2,3}{\bus{\i}{\i+1}{-3.9}{\k}}
-\sname{-5.2}{o\_b\_rd\_col}
-\bus{1}{5}{-5.2}{j0 = 0} \bus{5}{9}{-5.2}{j0 = 2}
-\sname{-6.5}{o\_row\_valid} \lo{0}{8}{-6.7} \hi{8}{10}{-6.7} \lo{10}{12}{-6.7} \hi{12}{14}{-6.7} \lo{14}{15}{-6.7}
-\sname{-7.8}{o\_row\_idx/col}
-\bus{8}{9}{-7.8}{0/0} \bus{9}{10}{-7.8}{1/0} \bus{12}{13}{-7.8}{0/2} \bus{13}{14}{-7.8}{1/2}
-\sname{-9.1}{o\_row\_data}
-\bus{8}{9}{-9.1}{} \bus{9}{10}{-9.1}{} \bus{12}{13}{-9.1}{} \bus{13}{14}{-9.1}{}
-\node[font=\tiny,anchor=north] at (8.5,-9.45) {$-58$, 219};
-\node[font=\tiny,anchor=north] at (9.5,-9.95) {92, 93};
-\node[font=\tiny,anchor=north] at (12.5,-9.45) {250, 7};
-\node[font=\tiny,anchor=north] at (13.5,-9.95) {$-173$, $-14$};
-\sname{-11.2}{o\_pe\_done} \lo{0}{14}{-11.4} \hi{14}{15}{-11.4}
-\end{tikzpicture}
-\caption{Dạng sóng của ví dụ: tile 0 đọc ở chu kỳ 1–4, tile 1 ở chu kỳ 5–8; hàng xả ở chu kỳ 8, 9, 12, 13; \sigc{o_pe_done} ở chu kỳ 14}\label{fig:6-1}
-\end{figure}
 
-% ===================== 7 =====================
-\section{Reset và soft clear}\label{sec:7}
+\paragraph{Reset}\label{tab:7-1}
+\begin{itemize}
+\item \sig{rst_n} = 0 (bất đồng bộ): \sig{gemm_tile_seq} về IDLE; mọi thanh ghi cờ (\sig{vld}, \sig{first}, \sig{last} trong \sig{gemm_skew} và \sig{gemm_pe}), FIFO metadata, \sig{o_row_valid}, \sig{o_final}, đường trễ \sig{o_pe_done}, \sig{o_busy} về 0
+\item \sig{i_soft_clr} = 1 (đồng bộ): tác động như (\sig{rst_n} = 0 (bất đồng bộ): \sig{gemm_tile_seq} về IDLE; mọi thanh ghi cờ (\sig{vld}, \sig{first}, \sig{last} trong \sig{gemm_skew} và \sig{gemm_pe}), FIFO metadata, \sig{o_row_valid}, \sig{o_final}, đường trễ \sig{o_pe_done}, \sig{o_busy} về 0 ) ở cạnh clock cuối chu kỳ đó. Từ chu kỳ kế tiếp array rảnh; không có \sig{o_pe_done} cho lượt bị hủy, không có \sig{o_row_valid} nào của lượt đó
+\item Thanh ghi dữ liệu (\sig{acc}, \sig{res}, \sig{a}, \sig{b} trong PE và tầng làm lệch, dữ liệu đầu ra) không bắt buộc reset; mọi đường dùng chúng đều bị chặn bởi cờ hợp lệ đã được reset
+\item \sig{i_soft_clr} và \sig{i_pe_start} không bao giờ cùng chu kỳ (FSM bảo đảm); nếu có, \sig{i_soft_clr} thắng
+\end{itemize}
 
-\begin{reqtable}{Reset}{tab:7-1}
-RST-01 & \sig{rst_n} = 0 (bất đồng bộ): \sig{gemm_tile_seq} về IDLE; mọi thanh ghi cờ (\sig{vld}, \sig{first}, \sig{last} trong \sig{gemm_skew} và \sig{gemm_pe}), FIFO metadata, \sig{o_row_valid}, \sig{o_final}, đường trễ \sig{o_pe_done}, \sig{o_busy} về 0 \\
-RST-02 & \sig{i_soft_clr} = 1 (đồng bộ): tác động như RST-01 ở cạnh clock cuối chu kỳ đó. Từ chu kỳ kế tiếp array rảnh; không có \sig{o_pe_done} cho lượt bị hủy, không có \sig{o_row_valid} nào của lượt đó \\
-RST-03 & Thanh ghi dữ liệu (\sig{acc}, \sig{res}, \sig{a}, \sig{b} trong PE và tầng làm lệch, dữ liệu đầu ra) không bắt buộc reset; mọi đường dùng chúng đều bị chặn bởi cờ hợp lệ đã được reset \\
-RST-04 & \sig{i_soft_clr} và \sig{i_pe_start} không bao giờ cùng chu kỳ (FSM bảo đảm); nếu có, \sig{i_soft_clr} thắng \\
-\end{reqtable}
 
 % ===================== 8 =====================
-\section{Quy tắc hiện thực}\label{sec:8}
+\subsection{Quy tắc hiện thực}\label{sec:8}
 
-\begin{reqtable}{Hiện thực}{tab:8-1}
-IMP-01 & SystemVerilog tổng hợp được; \sig{always_ff @(posedge clk or negedge rst_n)} cho thanh ghi có reset, \sig{always_ff @(posedge clk)} cho thanh ghi dữ liệu; không có latch \\
-IMP-02 & Mọi phép nhân, cộng dùng kiểu \sig{signed} rõ ràng (\sig{$signed}); không dùng phép chia hay modulo: $\lceil M/P\rceil$ tính bằng dịch vì P là lũy thừa của 2 \\
-IMP-03 & Mỗi module con trong file riêng, cùng tên module; lưới PE và các tầng làm lệch dựng bằng \sig{generate} \\
-IMP-04 & Không có đường tổ hợp từ input tới output của \sig{gemm_systolic_array}: các port \sig{o_*} đều lấy từ thanh ghi \\
-\end{reqtable}
 
-\begin{reqtable}{Assertion bắt buộc trong RTL (SVA, chỉ trong mô phỏng)}{tab:8-2}
-AS-01 & \sig{i_pe_start} → \sig{!o_busy} \\
-AS-02 & \sig{o_a_rd_en == o_b_rd_en} \\
-AS-03 & \sig{$onehot0(trig)} trong \sig{gemm_drain} \\
-AS-04 & FIFO metadata không bao giờ đẩy khi đầy, không bao giờ lấy khi rỗng \\
-AS-05 & \sig{o_busy} → \sig{$stable(i_matrix_dim)} \\
-AS-06 & \sig{o_row_valid} → (\sig{o_row_idx} < M) ∧ (\sig{o_row_col} < N) \\
-AS-07 & Mỗi \sig{i_pe_start} có đúng một \sig{o_pe_done} trước \sig{i_pe_start} kế tiếp \\
-\end{reqtable}
+\paragraph{Hiện thực}\label{tab:8-1}
+\begin{itemize}
+\item SystemVerilog tổng hợp được; \sig{always_ff @(posedge clk or negedge rst_n)} cho thanh ghi có reset, \sig{always_ff @(posedge clk)} cho thanh ghi dữ liệu; không có latch
+\item Mọi phép nhân, cộng dùng kiểu \sig{signed} rõ ràng (\sig{$signed}); không dùng phép chia hay modulo: $\lceil M/P\rceil$ tính bằng dịch vì P là lũy thừa của 2
+\item Mỗi module con trong file riêng, cùng tên module; lưới PE và các tầng làm lệch dựng bằng \sig{generate}
+\item Không có đường tổ hợp từ input tới output của \sig{gemm_systolic_array}: các port \sig{o_*} đều lấy từ thanh ghi
+\end{itemize}
 
-\begin{spectable}{L{0.4}L{0.3}L{0.3}}{Tài nguyên ước tính}{tab:8-3}{\textbf{Hạng mục} & \textbf{P = 4} & \textbf{P = 8}}
-Bộ nhân 8 × 8 có dấu & 16 & 64 \\
-Bộ cộng 32 bit & 16 & 64 \\
-Thanh ghi trong lưới PE (83 bit mỗi PE) & 1 328 bit & 5 312 bit \\
-Thanh ghi làm lệch (A 11 bit, B 8 bit mỗi tầng) & 6 tầng: 114 bit & 28 tầng: 532 bit \\
-Mux xả & 4:1 × 128 bit & 8:1 × 256 bit \\
+
+
+\paragraph{Assertion bắt buộc trong RTL (SVA, chỉ trong mô phỏng)}\label{tab:8-2}
+\begin{itemize}
+\item \sig{i_pe_start} → \sig{!o_busy}
+\item \sig{o_a_rd_en == o_b_rd_en}
+\item \sig{$onehot0(trig)} trong \sig{gemm_drain}
+\item FIFO metadata không bao giờ đẩy khi đầy, không bao giờ lấy khi rỗng
+\item \sig{o_busy} → \sig{$stable(i_matrix_dim)}
+\item \sig{o_row_valid} → (\sig{o_row_idx} < M) ∧ (\sig{o_row_col} < N)
+\item Mỗi \sig{i_pe_start} có đúng một \sig{o_pe_done} trước \sig{i_pe_start} kế tiếp
+\end{itemize}
+
+
+\begin{spectable}{|L{0.4}|L{0.3}|L{0.3}|}{Tài nguyên ước tính}{tab:8-3}{\textbf{Hạng mục} & \textbf{P = 4} & \textbf{P = 8}}
+Bộ nhân 8 × 8 có dấu & 16 & 64 \\\hline
+
+Bộ cộng 32 bit & 16 & 64 \\\hline
+
+Thanh ghi trong lưới PE (83 bit mỗi PE) & 1 328 bit & 5 312 bit \\\hline
+
+Thanh ghi làm lệch (A 11 bit, B 8 bit mỗi tầng) & 6 tầng: 114 bit & 28 tầng: 532 bit \\\hline
+
+Mux xả & 4:1 × 128 bit & 8:1 × 256 bit \\\hline
+
 \end{spectable}
 
 \end{document}

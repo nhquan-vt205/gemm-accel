@@ -1,247 +1,361 @@
-% !TEX program = xelatex
-% Spec module gemm_dma_engine v1.0 (full option)
 \documentclass[10pt,a4paper]{article}
 \newcommand{\ModHeader}{gemm\_dma\_engine}
-\input{preamble}
-
+\input{../../../common/timer_style.tex}
 \begin{document}
-\makecover{gemm\_dma\_engine}{DMA hai kênh: đọc và ghi độc lập}{Port list, bộ sinh địa chỉ 2D, cắt burst, kênh đọc, kênh ghi, lỗi và abort}{%
-\textbf{Module} & \sig{gemm_dma_engine} (instance \sig{u_dma} trong \sig{gemm_accel_top}) \\
-\textbf{Module con} & \sig{gemm_dma_agen} (2 instance), \sig{gemm_dma_rd}, \sig{gemm_dma_wr}, \sig{gemm_dma_wfifo} \\
-\textbf{Cấu hình} & Bản đầy đủ: lệnh FETCH, stride, hai kênh chạy đồng thời (BS-04). Ở bản cơ bản FSM không bao giờ phát hai lệnh cùng lúc và mọi stride bằng độ dài hàng; module không cần tham số riêng \\
-\textbf{Tuân theo} & Spec hệ thống v1.0: mục 2.3 (DAT-01 … DAT-05), mục 5.3 (DMA-01 … DMA-10), mục 5.4 (SPM-02, SPM-05), mục 6 (port \sig{m_axi_*}), mục 7 (DSC-01, DSC-09, PP-01) \\
-\textbf{Kèm theo} & \sig{gemm_dma_model.py}: golden cắt burst và địa chỉ; mô hình hai kênh với slave AXI ngẫu nhiên (trễ, lỗi RESP, \sig{rlast} sai, abort) \\}
+{\Large\bfseries ĐẶC TẢ THIẾT KẾ gemm\_dma\_engine}\par
+\tableofcontents
+\clearpage
+\section{Tổng quan}
+\subsection{Tính năng chính}\label{sec:1}
 
-% ===================== 1 =====================
-\section{Chức năng}\label{sec:1}
 
-\begin{keypoint}
 DMA chép dữ liệu giữa DRAM và scratchpad theo lệnh của Main FSM. \textbf{Kênh đọc} chạy FETCH, LOAD\_A, LOAD\_B, LOAD\_BIAS: đọc DRAM bằng burst AXI và ghi vào SRAM (hoặc trả 16 word descriptor cho FSM). \textbf{Kênh ghi} chạy STORE\_C: đọc buffer C và ghi DRAM. Hai kênh độc lập hoàn toàn, mỗi kênh tối đa một burst outstanding. Mỗi lệnh là một bản sao 2D: \sig{rows} hàng, mỗi hàng \sig{rwords} word, các hàng cách nhau \sig{stride} byte.
-\end{keypoint}
 
-\begin{reqtable}{Chức năng}{tab:1-1}
-DMA-F01 & Với lệnh (base, rows, rwords, stride), word thứ n (0 ≤ n < rows · rwords), r = n / rwords, w = n mod rwords, nằm ở địa chỉ DRAM base + r · stride + 4w và ở địa chỉ scratchpad theo bảng~\ref{tab:5-1}. Mỗi word được chép đúng một lần, theo thứ tự n tăng dần \\
-DMA-F02 & Mỗi lệnh kết thúc bằng đúng một xung \sig{o_*_done} hoặc \sig{o_*_error} (DMA-01). Lỗi: \sig{rresp} hoặc \sig{bresp} ≠ OKAY, hoặc \sig{rlast} sai vị trí (DMA-08) \\
-DMA-F03 & DMA không đảo byte, không đổi dữ liệu (DMA-02); không biết M, N, K hay ý nghĩa của buffer \\
-DMA-F04 & Kênh đọc và kênh ghi được phép có burst AXI cùng lúc (PP-01). AXI4 cho phép hai kênh vì chúng không chia sẻ tín hiệu \\
-\end{reqtable}
+
+
+\paragraph{Chức năng}\label{tab:1-1}
+\begin{itemize}
+\item Với lệnh (base, rows, rwords, stride), word thứ n (0 ≤ n < rows · rwords), r = n / rwords, w = n mod rwords, nằm ở địa chỉ DRAM base + r · stride + 4w và ở địa chỉ scratchpad theo các quy tắc địa chỉ và giao tiếp bên dưới. Mỗi word được chép đúng một lần, theo thứ tự n tăng dần
+\item Mỗi lệnh kết thúc bằng đúng một xung \sig{o_*_done} hoặc \sig{o_*_error} . Lỗi: \sig{rresp} hoặc \sig{bresp} ≠ OKAY, hoặc \sig{rlast} sai vị trí
+\item DMA không đảo byte, không đổi dữ liệu ; không biết M, N, K hay ý nghĩa của buffer
+\item Kênh đọc và kênh ghi được phép có burst AXI cùng lúc . AXI4 cho phép hai kênh vì chúng không chia sẻ tín hiệu
+\end{itemize}
+
 
 % ===================== 2 =====================
-\section{Tham số}\label{sec:2}
-\begin{spectable}{L{0.24}L{0.13}L{0.63}}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
-\sig{MAX_BURST_BEATS} & 16 & Số beat tối đa mỗi burst, 1 … 256. Nối từ tham số cùng tên của top \\
-\sig{WFIFO_DEPTH} & 4 & localparam: số word của FIFO dữ liệu ghi. 4 đủ cho 1 beat W mỗi chu kỳ vì SRAM trả dữ liệu sau đúng 1 chu kỳ \\
+\subsection{Tham số}\label{sec:2}
+\begin{spectable}{|L{0.24}|L{0.13}|L{0.63}|}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
+\sig{MAX_BURST_BEATS} & 16 & Số beat tối đa mỗi burst, 1 … 256. Nối từ tham số cùng tên của top \\\hline
+
+\sig{WFIFO_DEPTH} & 4 & localparam: số word của FIFO dữ liệu ghi. 4 đủ cho 1 beat W mỗi chu kỳ vì SRAM trả dữ liệu sau đúng 1 chu kỳ \\\hline
+
 \end{spectable}
 
 % ===================== 3 =====================
-\section{Port list}\label{sec:3}
+\subsection{Tín hiệu giao tiếp}\label{sec:3}
 
-\begin{spectable}{L{0.22}L{0.08}L{0.08}L{0.1}L{0.52}}{Port nội bộ của \sigc{gemm_dma_engine}}{tab:3-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Nối với} & \textbf{Mô tả}}
-\multicolumn{5}{@{}l}{\textit{Clock, reset}} \\
-\sig{clk}, \sig{rst_n}, \sig{i_soft_clr} & 1 × 3 & In & top, FSM & \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Lệnh kênh đọc}} \\
-\sig{i_rd_start} & 1 & In & FSM & Xung bắt đầu; các \sig{i_rd_*} tham số hợp lệ ở chu kỳ này \\
-\sig{i_rd_dst} & 2 & In & FSM & 0: A, 1: B, 2: BIAS, 3: descriptor \\
-\sig{i_rd_base} & 32 & In & FSM & Địa chỉ byte hàng đầu, căn 4 \\
-\sig{i_rd_rows}, \sig{i_rd_rwords} & 6, 6 & In & FSM & 1 … 32 mỗi trường \\
-\sig{i_rd_stride} & 16 & In & FSM & Bội của 4, ≥ 4 · \sig{rwords} \\
-\sig{i_rd_bank} & 1 & In & FSM & Bank scratchpad đích \\
-\sig{i_rd_abort} & 1 & In & FSM & Mức: abort (DMA-10) \\
-\sig{o_rd_busy} & 1 & Out & FSM & Từ chu kỳ sau \sig{i_rd_start} tới hết chu kỳ có done/error \\
-\sig{o_rd_done}, \sig{o_rd_error} & 1, 1 & Out & FSM & Xung 1 chu kỳ \\
-\sig{o_desc_valid}, \sig{o_desc_idx}, \sig{o_desc_data} & 1, 4, 32 & Out & FSM & Một word descriptor (chỉ khi dst = 3) \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Lệnh kênh ghi}} \\
-\sig{i_wr_start}, \sig{i_wr_fmt} & 1, 1 & In & FSM & Xung bắt đầu; 0: INT32, 1: INT8 \\
-\sig{i_wr_base}, \sig{i_wr_rows}, \sig{i_wr_rwords}, \sig{i_wr_stride}, \sig{i_wr_bank} & 32, 6, 6, 16, 1 & In & FSM & Như kênh đọc \\
-\sig{i_wr_abort} & 1 & In & FSM & \\
-\sig{o_wr_busy}, \sig{o_wr_done}, \sig{o_wr_error} & 1 × 3 & Out & FSM & \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng ghi scratchpad (A, B, BIAS)}} \\
-\sig{o_spm_wr_valid} & 1 & Out & SRAM & Ghi một word \\
-\sig{o_spm_wr_buf} & 2 & Out & SRAM & 0: A, 1: B, 2: BIAS \\
-\sig{o_spm_wr_bank} & 1 & Out & SRAM & \\
-\sig{o_spm_wr_addr} & 10 & Out & SRAM & Địa chỉ word logic (SPM-02) \\
-\sig{o_spm_wr_data} & 32 & Out & SRAM & \\
-\sig{i_spm_wr_ready} & 1 & In & SRAM & Bắt tay; SRAM luôn giữ bằng 1 (SRM-I01) \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng đọc scratchpad (C)}} \\
-\sig{o_spm_rd_valid}, \sig{o_spm_rd_bank}, \sig{o_spm_rd_addr} & 1, 1, 10 & Out & SRAM & Yêu cầu đọc một word C \\
-\sig{i_spm_rd_ready} & 1 & In & SRAM & Luôn bằng 1 \\
-\sig{i_spm_rd_rvalid}, \sig{i_spm_rd_rdata} & 1, 32 & In & SRAM & Dữ liệu, đúng 1 chu kỳ sau yêu cầu được nhận \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{AXI4-Full master: 25 port \sigc{m_axi_*} của bảng 6-3 spec hệ thống, nối thẳng ra top}} \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu nội bộ của \sigc{gemm_dma_engine}}{tab:3-1}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\multicolumn{4}{@{}l}{\textit{Clock, reset}} \\\hline
+
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{i_soft_clr} & 1 & Input & Xung xóa đồng bộ dài một chu kỳ do Main FSM phát.\newline Xóa trạng thái điều khiển tại cạnh lên; phạm vi xóa dữ liệu được quy định trong mục Reset. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Lệnh kênh đọc}} \\\hline
+
+\sig{i_rd_start} & 1 & Input & Xung một chu kỳ yêu cầu bắt đầu lệnh đọc DRAM.\newline Chỉ phát khi kênh rảnh.\newline Các tham số của lệnh được chốt tại cạnh lên của chu kỳ có i\_rd\_start = 1. \\\hline
+
+\sig{i_rd_dst} & 2 & Input & Chọn đích của lệnh đọc.\newline Giá trị 0: buffer A.\newline Giá trị 1: buffer B.\newline Giá trị 2: buffer BIAS.\newline Giá trị 3: descriptor trả về Main FSM.\newline Giá trị được chốt cùng xung i\_rd\_start. \\\hline
+
+\sig{i_rd_base} & 32 & Input & Địa chỉ byte của hàng đầu tiên trong DRAM cho lệnh đọc DRAM.\newline Địa chỉ phải căn 4 byte; được chốt cùng xung i\_rd\_start. \\\hline
+
+\sig{i_rd_rows} & 6 & Input & Số hàng cần truyền trong lệnh đọc DRAM, từ 1 đến 32.\newline Giá trị được chốt cùng xung i\_rd\_start. \\\hline
+\sig{i_rd_rwords} & 6 & Input & Số word 32 bit cần truyền trong mỗi hàng của lệnh đọc DRAM, từ 1 đến 32.\newline Giá trị được chốt cùng xung i\_rd\_start. \\\hline
+
+\sig{i_rd_stride} & 16 & Input & Khoảng cách tính bằng byte giữa địa chỉ đầu hai hàng liên tiếp trong DRAM.\newline Phải là bội của 4 và không nhỏ hơn 4 lần số word mỗi hàng.\newline Được chốt cùng xung i\_rd\_start. \\\hline
+
+\sig{i_rd_bank} & 1 & Input & Chọn bank đích của buffer A, B hoặc BIAS khi nạp dữ liệu; không dùng cho FETCH.\newline Giá trị được chốt cùng xung i\_rd\_start. \\\hline
+
+\sig{i_rd_abort} & 1 & Input & Yêu cầu dừng lệnh đọc DRAM; đây là tín hiệu mức.\newline DMA ghi nhớ yêu cầu trong suốt lệnh, không khởi tạo burst mới và hoàn tất các giao dịch đã cam kết.\newline Abort không tự tạo lỗi. \\\hline
+
+\sig{o_rd_busy} & 1 & Output & Báo kênh đọc DRAM đang bận.\newline Bằng 1 từ chu kỳ sau khi nhận i\_rd\_start đến hết chu kỳ báo done hoặc error; không nhận lệnh mới trong khoảng này. \\\hline
+
+\sig{o_rd_done} & 1 & Output & Xung một chu kỳ báo lệnh đọc DRAM kết thúc mà không có lỗi AXI.\newline Không xuất hiện đồng thời với error.\newline Lệnh bị abort vẫn báo done nếu không gặp lỗi. \\\hline
+\sig{o_rd_error} & 1 & Output & Xung một chu kỳ báo lệnh đọc DRAM kết thúc có lỗi.\newline Lỗi gồm phản hồi R khác OKAY hoặc RLAST sai vị trí.\newline Không xuất hiện đồng thời với done; chỉ báo sau khi giao dịch đang dở đã được xử lý. \\\hline
+
+\sig{o_desc_valid} & 1 & Output & Báo có một word descriptor hợp lệ trong chu kỳ này.\newline Chỉ dùng với lệnh FETCH; bên nhận lấy dữ liệu khi valid = 1, không có ready. \\\hline
+\sig{o_desc_idx} & 4 & Output & Chỉ số word trong descriptor, từ 0 đến 15.\newline Hợp lệ cùng chu kỳ với o\_desc\_valid. \\\hline
+\sig{o_desc_data} & 32 & Output & Nội dung 32 bit của word descriptor có chỉ số o\_desc\_idx.\newline Hợp lệ cùng chu kỳ với o\_desc\_valid; dữ liệu của FETCH bị lỗi không được dùng để thực thi job. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Lệnh kênh ghi}} \\\hline
+
+\sig{i_wr_start} & 1 & Input & Xung một chu kỳ yêu cầu bắt đầu lệnh ghi DRAM.\newline Chỉ phát khi kênh rảnh.\newline Các tham số của lệnh được chốt tại cạnh lên của chu kỳ có i\_wr\_start = 1. \\\hline
+\sig{i_wr_fmt} & 1 & Input & Chọn định dạng dữ liệu trong buffer C.\newline Giá trị 0: INT32, mỗi phần tử chiếm một word.\newline Giá trị 1: INT8, bốn phần tử trong một word.\newline Giá trị được chốt cùng xung i\_wr\_start. \\\hline
+
+\sig{i_wr_base} & 32 & Input & Địa chỉ byte của hàng đầu tiên trong DRAM cho lệnh ghi DRAM.\newline Địa chỉ phải căn 4 byte; được chốt cùng xung i\_wr\_start. \\\hline
+\sig{i_wr_rows} & 6 & Input & Số hàng cần truyền trong lệnh ghi DRAM, từ 1 đến 32.\newline Giá trị được chốt cùng xung i\_wr\_start. \\\hline
+\sig{i_wr_rwords} & 6 & Input & Số word 32 bit cần truyền trong mỗi hàng của lệnh ghi DRAM, từ 1 đến 32.\newline Giá trị được chốt cùng xung i\_wr\_start. \\\hline
+\sig{i_wr_stride} & 16 & Input & Khoảng cách tính bằng byte giữa địa chỉ đầu hai hàng liên tiếp trong DRAM.\newline Phải là bội của 4 và không nhỏ hơn 4 lần số word mỗi hàng.\newline Được chốt cùng xung i\_wr\_start. \\\hline
+\sig{i_wr_bank} & 1 & Input & Chọn bank nguồn của buffer C khi thực hiện STORE\_C.\newline Giá trị được chốt cùng xung i\_wr\_start. \\\hline
+
+\sig{i_wr_abort} & 1 & Input & Yêu cầu dừng lệnh ghi DRAM; đây là tín hiệu mức.\newline DMA ghi nhớ yêu cầu trong suốt lệnh, không khởi tạo burst mới và hoàn tất các giao dịch đã cam kết.\newline Abort không tự tạo lỗi. \\\hline
+
+\sig{o_wr_busy} & 1 & Output & Báo kênh ghi DRAM đang bận.\newline Bằng 1 từ chu kỳ sau khi nhận i\_wr\_start đến hết chu kỳ báo done hoặc error; không nhận lệnh mới trong khoảng này. \\\hline
+\sig{o_wr_done} & 1 & Output & Xung một chu kỳ báo lệnh ghi DRAM kết thúc mà không có lỗi AXI.\newline Không xuất hiện đồng thời với error.\newline Lệnh bị abort vẫn báo done nếu không gặp lỗi. \\\hline
+\sig{o_wr_error} & 1 & Output & Xung một chu kỳ báo lệnh ghi DRAM kết thúc có lỗi.\newline Lỗi xảy ra khi phản hồi B khác OKAY.\newline Không xuất hiện đồng thời với done; chỉ báo sau khi giao dịch đang dở đã được xử lý. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng ghi scratchpad (A, B, BIAS)}} \\\hline
+
+\sig{o_spm_wr_valid} & 1 & Output & Yêu cầu ghi một word 32 bit vào scratchpad.\newline Ghi được nhận khi valid và ready cùng bằng 1 tại cạnh lên. \\\hline
+
+\sig{o_spm_wr_buf} & 2 & Output & Chọn buffer đích cho word ghi.\newline Giá trị 0: A.\newline Giá trị 1: B.\newline Giá trị 2: BIAS; giá trị 3 không hợp lệ. \\\hline
+
+\sig{o_spm_wr_bank} & 1 & Output & Chọn bank đích cho word ghi.\newline Hợp lệ cùng yêu cầu ghi; bỏ qua khi chỉ có một bank. \\\hline
+
+\sig{o_spm_wr_addr} & 10 & Output & Địa chỉ word logic trong buffer đích.\newline A/B dùng miền 0 đến 255; BIAS dùng miền 0 đến 31.\newline Hợp lệ cùng yêu cầu ghi. \\\hline
+
+\sig{o_spm_wr_data} & 32 & Output & Word dữ liệu 32 bit cần ghi vào scratchpad.\newline Hợp lệ cùng yêu cầu ghi; DMA giữ nguyên thứ tự byte của dữ liệu DRAM. \\\hline
+
+\sig{i_spm_wr_ready} & 1 & Input & Báo scratchpad có thể nhận word ghi.\newline Thiết kế SRAM hiện tại luôn giữ bằng 1; giao dịch vẫn được xác định bởi valid và ready. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng đọc scratchpad (C)}} \\\hline
+
+\sig{o_spm_rd_valid} & 1 & Output & Yêu cầu đọc một word từ buffer C.\newline Yêu cầu được nhận tại cạnh lên khi valid và ready cùng bằng 1. \\\hline
+\sig{o_spm_rd_bank} & 1 & Output & Chọn bank nguồn của buffer C.\newline Hợp lệ cùng yêu cầu đọc; bỏ qua khi chỉ có một bank. \\\hline
+\sig{o_spm_rd_addr} & 10 & Output & Địa chỉ word logic cần đọc trong buffer C.\newline Hợp lệ cùng yêu cầu đọc; miền địa chỉ phụ thuộc bố cục INT32 hoặc INT8 của C. \\\hline
+
+\sig{i_spm_rd_ready} & 1 & Input & Báo scratchpad có thể nhận yêu cầu đọc C.\newline Thiết kế SRAM hiện tại luôn giữ bằng 1. \\\hline
+
+\sig{i_spm_rd_rvalid} & 1 & Input & Báo word đọc trả về hợp lệ.\newline Xuất hiện đúng một chu kỳ sau yêu cầu được nhận; mỗi yêu cầu có đúng một phản hồi, theo thứ tự. \\\hline
+\sig{i_spm_rd_rdata} & 32 & Input & Word dữ liệu 32 bit đọc từ buffer C.\newline Bên nhận lấy dữ liệu khi read rvalid = 1; không có ready cho kênh trả dữ liệu. \\\hline
+
+
+
 \end{spectable}
 
-\begin{reqtable}{Giao tiếp}{tab:3-2}
-DMA-I01 & \sig{i_rd_start} chỉ đến khi \sig{o_rd_busy} = 0 (FSM-I02). DMA chốt mọi tham số ở chu kỳ đó; FSM được đổi chúng ngay sau \\
-DMA-I02 & \sig{i_rd_abort}, \sig{i_wr_abort} được chốt thành cờ \sig{abort_seen} trong suốt lệnh; xóa khi lệnh kết thúc \\
-DMA-I03 & \sig{m_axi_arsize} = \sig{m_axi_awsize} = 3'b010; \sig{m_axi_arburst} = \sig{m_axi_awburst} = 2'b01; \sig{m_axi_wstrb} = 4'b1111; \sig{m_axi_bready} = 1 (DMA-04, DMA-07) \\
-DMA-I04 & Mọi port \sig{m_axi_*} ra lấy từ thanh ghi, trừ \sig{m_axi_rready} (= trạng thái ∧ \sig{i_spm_wr_ready}); không có đường tổ hợp từ \sig{m_axi_*} vào tới \sig{m_axi_*} ra (TOP-04) \\
-DMA-I05 & \sig{o_spm_wr_valid} = \sig{m_axi_rvalid} ∧ \sig{m_axi_rready} ∧ (beat nằm trong burst) ∧ (dst ≠ 3); \sig{o_spm_wr_data} = \sig{m_axi_rdata}. Đường tổ hợp này chỉ đi vào SRAM, được phép \\
-\end{reqtable}
+
+\paragraph{Giao tiếp}\label{tab:3-2}
+\begin{itemize}
+\item \sig{i_rd_start} chỉ đến khi \sig{o_rd_busy} = 0 . DMA chốt mọi tham số ở chu kỳ đó; FSM được đổi chúng ngay sau
+\item \sig{i_rd_abort}, \sig{i_wr_abort} được chốt thành cờ \sig{abort_seen} trong suốt lệnh; xóa khi lệnh kết thúc
+\item \sig{m_axi_arsize} = \sig{m_axi_awsize} = 3'b010; \sig{m_axi_arburst} = \sig{m_axi_awburst} = 2'b01; \sig{m_axi_wstrb} = 4'b1111; \sig{m_axi_bready} = 1
+\item Mọi port \sig{m_axi_*} ra lấy từ thanh ghi, trừ \sig{m_axi_rready} (= trạng thái ∧ \sig{i_spm_wr_ready}); không có đường tổ hợp từ \sig{m_axi_*} vào tới \sig{m_axi_*} ra
+\item \sig{o_spm_wr_valid} = \sig{m_axi_rvalid} ∧ \sig{m_axi_rready} ∧ (beat nằm trong burst) ∧ (dst ≠ 3); \sig{o_spm_wr_data} = \sig{m_axi_rdata}. Đường tổ hợp này chỉ đi vào SRAM, được phép
+\end{itemize}
+
 
 % ===================== 4 =====================
-\section{Vi kiến trúc}\label{sec:4}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=1cm,y=1cm,scale=0.85,transform shape]
-\draw[brand,line width=1pt,rounded corners=3pt,fill=cream] (0,0) rectangle (16.8,7.2);
-\node[anchor=north west,font=\headfont\bfseries\small,text=brand] at (0.1,7.15) {gemm\_dma\_engine};
-\node[blk,minimum width=3.3cm,minimum height=1.4cm] (ag1) at (2.3,5.2) {\textbf{gemm\_dma\_agen}\\[-1pt]\scriptsize đoạn · burst · địa chỉ SPM};
-\node[blk,minimum width=4.6cm,minimum height=1.6cm] (rd) at (9.4,5.2) {\textbf{gemm\_dma\_rd}\\[-1pt]\scriptsize RD\_IDLE · RD\_ADDR · RD\_DATA · RD\_FIN\\[-2pt]\scriptsize kiểm rresp, rlast};
-\node[blk,minimum width=3.3cm,minimum height=1.4cm] (ag2) at (2.3,1.9) {\textbf{gemm\_dma\_agen}\\[-1pt]\scriptsize đoạn · burst · địa chỉ SPM};
-\node[blk,minimum width=4.6cm,minimum height=1.6cm] (wr) at (9.4,1.9) {\textbf{gemm\_dma\_wr}\\[-1pt]\scriptsize WR\_IDLE · WR\_BURST · WR\_RESP · WR\_FIN\\[-2pt]\scriptsize credit đọc SRAM};
-\node[blkd,minimum width=1.8cm,minimum height=1.0cm,font=\scriptsize] (ff) at (13.7,1.9) {wfifo\\[-2pt]4 × 32};
-\draw[ctl,<->] (ag1) -- node[lbl,above]{burst, next} (rd);
-\draw[ctl,<->] (ag2) -- node[lbl,above]{burst, next} (wr);
-\draw[dat] (wr) -- (ff);
-\draw[ctl] (-0.6,6.3) node[left,font=\scriptsize]{FSM i\_rd\_*} -- (0.9,6.3) -- (0.9,5.9);
-\draw[ctl] (-0.6,3.0) node[left,font=\scriptsize]{FSM i\_wr\_*} -- (0.9,3.0) -- (0.9,2.6);
-\draw[dat,<->] (rd.east) -- ++(2.6,0) node[right,font=\scriptsize,text=data,align=left]{AR, R\\m\_axi\_*};
-\draw[dat,<->] (ff.east) -- ++(1.0,0) node[right,font=\scriptsize,text=data,align=left]{AW, W, B\\m\_axi\_*};
-\draw[dat] (rd.south) -- ++(0,-0.75) node[below,font=\scriptsize,text=data,fill=cream,inner sep=1pt]{→ SRAM: o\_spm\_wr\_* · → FSM: o\_desc\_*};
-\draw[dat,<->] (wr.south) -- ++(0,-1.0) node[below,font=\scriptsize,text=data]{o\_spm\_rd\_* / i\_spm\_rd\_*};
-\end{tikzpicture}
-\caption{Cấu trúc bên trong \sigc{gemm_dma_engine}: hai kênh giống nhau về cách sinh địa chỉ, không chia sẻ trạng thái}\label{fig:4-1}
-\end{figure}
+\subsection{Tín hiệu AXI}
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu AXI}{tab:axi}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{m_axi_araddr} & 32 & Output & Địa chỉ byte đầu tiên của burst đọc.\newline Địa chỉ căn 4 byte.\newline Hợp lệ cùng ARVALID; giữ ổn định khi chờ bắt tay. \\\hline
 
-\begin{spectable}{L{0.2}L{0.16}L{0.64}}{Module con}{tab:4-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
-\sig{gemm_dma_agen} & \sig{u_agen_rd}, \sig{u_agen_wr} & Chia lệnh thành đoạn liên tục, cắt burst, đếm (r, w) và sinh địa chỉ scratchpad \\
-\sig{gemm_dma_rd} & \sig{u_rd} & Kênh đọc: AR, R; ghi SRAM hoặc xuất descriptor; lỗi, abort \\
-\sig{gemm_dma_wr} & \sig{u_wr} & Kênh ghi: đọc SRAM theo credit, AW, W, B; lỗi, abort \\
-\sig{gemm_dma_wfifo} & \sig{u_wfifo} & FIFO đồng bộ \sig{WFIFO_DEPTH} × 32, đầu ra có thanh ghi (head) \\
+\sig{m_axi_arlen} & 8 & Output & Số beat của burst đọc trừ 1.\newline Hợp lệ cùng ARVALID; số beat thực tế từ 1 đến MAX\_BURST\_BEATS và không vượt biên 4 KiB. \\\hline
+
+\sig{m_axi_arsize} & 3 & Output & Kích thước mỗi beat của burst đọc.\newline Luôn bằng 3'b010, tương ứng 4 byte. \\\hline
+
+\sig{m_axi_arburst} & 2 & Output & Kiểu burst đọc.\newline Luôn bằng 2'b01 (INCR); địa chỉ tăng 4 byte sau mỗi beat. \\\hline
+
+\sig{m_axi_arvalid} & 1 & Output & Báo địa chỉ và thuộc tính yêu cầu đọc hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi ARREADY = 1. \\\hline
+
+\sig{m_axi_arready} & 1 & Input & Báo bên nhận sẵn sàng nhận địa chỉ đọc.\newline Bắt tay xảy ra tại cạnh lên khi ARVALID và ARREADY cùng bằng 1. \\\hline
+
+\sig{m_axi_rdata} & 32 & Input & Word 32 bit đọc trả về.\newline Hợp lệ khi RVALID = 1; giữ nguyên trong lúc chờ RREADY. \\\hline
+
+\sig{m_axi_rresp} & 2 & Input & Mã phản hồi beat đọc.\newline Chỉ OKAY là thành công; mọi giá trị khác làm lệnh kết thúc có lỗi.\newline Hợp lệ cùng RVALID. \\\hline
+
+\sig{m_axi_rlast} & 1 & Input & Đánh dấu beat cuối burst đọc khi RVALID = 1.\newline DMA so sánh vị trí với ARLEN + 1; đến sớm hoặc muộn đều là lỗi. \\\hline
+
+\sig{m_axi_rvalid} & 1 & Input & Báo dữ liệu đọc hợp lệ.\newline Giữ valid và payload ổn định đến khi RREADY = 1. \\\hline
+
+\sig{m_axi_rready} & 1 & Output & Báo bên nhận sẵn sàng nhận dữ liệu đọc.\newline Giao dịch được nhận tại cạnh lên khi RVALID và RREADY cùng bằng 1. \\\hline
+
+\sig{m_axi_awaddr} & 32 & Output & Địa chỉ byte đầu tiên của burst ghi.\newline Địa chỉ căn 4 byte.\newline Hợp lệ cùng AWVALID; giữ ổn định khi chờ bắt tay. \\\hline
+
+\sig{m_axi_awlen} & 8 & Output & Số beat của burst ghi trừ 1.\newline Hợp lệ cùng AWVALID; số beat thực tế từ 1 đến MAX\_BURST\_BEATS và không vượt biên 4 KiB. \\\hline
+
+\sig{m_axi_awsize} & 3 & Output & Kích thước mỗi beat của burst ghi.\newline Luôn bằng 3'b010, tương ứng 4 byte. \\\hline
+
+\sig{m_axi_awburst} & 2 & Output & Kiểu burst ghi.\newline Luôn bằng 2'b01 (INCR); địa chỉ tăng 4 byte sau mỗi beat. \\\hline
+
+\sig{m_axi_awvalid} & 1 & Output & Báo địa chỉ và thuộc tính yêu cầu ghi hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi AWREADY = 1. \\\hline
+
+\sig{m_axi_awready} & 1 & Input & Báo bên nhận sẵn sàng nhận địa chỉ ghi.\newline Bắt tay xảy ra tại cạnh lên khi AWVALID và AWREADY cùng bằng 1. \\\hline
+
+\sig{m_axi_wdata} & 32 & Output & Word 32 bit cần ghi.\newline Hợp lệ khi WVALID = 1; giữ nguyên trong lúc chờ WREADY. \\\hline
+
+\sig{m_axi_wstrb} & 4 & Output & Mặt nạ byte ghi.\newline Luôn bằng 4'b1111 vì DMA ghi nguyên word 32 bit. \\\hline
+
+\sig{m_axi_wlast} & 1 & Output & Đánh dấu beat cuối burst ghi khi WVALID = 1.\newline Bằng 1 ở đúng beat thứ AWLEN + 1 và giữ nguyên trong lúc chờ WREADY. \\\hline
+
+\sig{m_axi_wvalid} & 1 & Output & Báo dữ liệu ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi WREADY = 1. \\\hline
+
+\sig{m_axi_wready} & 1 & Input & Báo bên nhận sẵn sàng nhận dữ liệu ghi.\newline Giao dịch được nhận tại cạnh lên khi WVALID và WREADY cùng bằng 1. \\\hline
+
+\sig{m_axi_bresp} & 2 & Input & Mã phản hồi burst ghi.\newline Chỉ OKAY là thành công; mọi giá trị khác làm lệnh kết thúc có lỗi.\newline Hợp lệ cùng BVALID. \\\hline
+
+\sig{m_axi_bvalid} & 1 & Input & Báo phản hồi ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi BREADY = 1. \\\hline
+
+\sig{m_axi_bready} & 1 & Output & Báo bên nhận sẵn sàng nhận phản hồi ghi.\newline Giao dịch được nhận tại cạnh lên khi BVALID và BREADY cùng bằng 1.\newline DMA luôn giữ BREADY = 1. \\\hline
+
+\end{spectable}
+\section{Đặc tả thanh ghi}
+Module không có thanh ghi ánh xạ MMIO. Cấu hình được nhận qua các tín hiệu đầu vào; trạng thái nội bộ, điều kiện chốt và reset được mô tả bên dưới.
+\section{Mô tả chức năng}
+\subsection{Tổ chức chức năng}\label{sec:4}
+
+
+
+\begin{spectable}{|L{0.2}|L{0.16}|L{0.64}|}{Module con}{tab:4-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
+\sig{gemm_dma_agen} & \sig{u_agen_rd}, \sig{u_agen_wr} & Chia lệnh thành đoạn liên tục, cắt burst, đếm (r, w) và sinh địa chỉ scratchpad \\\hline
+
+\sig{gemm_dma_rd} & \sig{u_rd} & Kênh đọc: AR, R; ghi SRAM hoặc xuất descriptor; lỗi, abort \\\hline
+
+\sig{gemm_dma_wr} & \sig{u_wr} & Kênh ghi: đọc SRAM theo credit, AW, W, B; lỗi, abort \\\hline
+
+\sig{gemm_dma_wfifo} & \sig{u_wfifo} & FIFO đồng bộ \sig{WFIFO_DEPTH} × 32, đầu ra có thanh ghi (head) \\\hline
+
 \end{spectable}
 
 % ===================== 5 =====================
-\section{\texorpdfstring{\sigc{gemm_dma_agen}}{gemm\_dma\_agen}: địa chỉ và burst}\label{sec:5}
+\subsection{\texorpdfstring{\sigc{gemm_dma_agen}}{gemm\_dma\_agen}: địa chỉ và burst}\label{sec:5}
 
-\begin{spectable}{L{0.2}L{0.09}L{0.08}L{0.63}}{Port của \sigc{gemm_dma_agen}}{tab:5-0}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-\sig{i_load} & 1 & In & Chốt lệnh mới (cùng chu kỳ \sig{i_*_start}) \\
-\sig{i_base}, \sig{i_rows}, \sig{i_rwords}, \sig{i_stride} & 32, 6, 6, 16 & In & Tham số lệnh \\
-\sig{i_wide} & 1 & In & 1: địa chỉ SPM \{r[4:0], w[4:0]\}; 0: \{r[4:0], w[2:0]\} \\
-\sig{o_has_burst} & 1 & Out & Còn burst chưa phát \\
-\sig{o_burst_addr}, \sig{o_burst_beats} & 32, 9 & Out & Burst kế tiếp: địa chỉ byte và số beat (1 … 256); thanh ghi \\
-\sig{i_burst_next} & 1 & In & Burst hiện tại đã được phát; tính burst sau \\
-\sig{i_word_next} & 1 & In & Một word đã được chép; tăng (r, w) \\
-\sig{o_spm_addr}, \sig{o_word_idx} & 10, 4 & Out & Địa chỉ SPM của word hiện tại; n[3:0] (cho \sig{o_desc_idx}) \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_dma_agen}}{tab:5-0}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{i_load} & 1 & Input & Xung chốt các tham số lệnh mới tại cạnh lên.\newline Được phát cùng chu kỳ start của kênh DMA tương ứng. \\\hline
+
+\sig{i_base} & 32 & Input & Địa chỉ byte đầu lệnh trong DRAM, căn 4 byte.\newline Chốt khi i\_load = 1. \\\hline
+\sig{i_rows} & 6 & Input & Số hàng cần truyền, từ 1 đến 32.\newline Chốt khi i\_load = 1. \\\hline
+\sig{i_rwords} & 6 & Input & Số word 32 bit của mỗi hàng, từ 1 đến 32.\newline Chốt khi i\_load = 1. \\\hline
+\sig{i_stride} & 16 & Input & Khoảng cách byte giữa đầu hai hàng.\newline Là bội của 4, không nhỏ hơn 4 lần i\_rwords; chốt khi i\_load = 1. \\\hline
+
+\sig{i_wide} & 1 & Input & Chọn bố cục địa chỉ scratchpad.\newline Giá trị 1: ghép r[4:0] với w[4:0]; 0: ghép r[4:0] với w[2:0].\newline Chốt cùng lệnh. \\\hline
+
+\sig{o_has_burst} & 1 & Output & Bằng 1 khi còn burst chưa phát của lệnh hiện tại.\newline Khi bằng 0, kênh DMA không được khởi tạo burst tiếp theo. \\\hline
+
+\sig{o_burst_addr} & 32 & Output & Địa chỉ byte đầu burst kế tiếp trong DRAM.\newline Là đầu ra thanh ghi, hợp lệ từ chu kỳ sau i\_load hoặc i\_burst\_next khi còn burst. \\\hline
+\sig{o_burst_beats} & 9 & Output & Số beat của burst kế tiếp, từ 1 đến 256.\newline Là đầu ra thanh ghi, đi cùng o\_burst\_addr; đã xét giới hạn độ dài và biên 4 KiB. \\\hline
+
+\sig{i_burst_next} & 1 & Input & Xung báo burst hiện tại đã được lấy để phát.\newline Cập nhật mô tả burst tiếp theo ở chu kỳ sau; không tự tăng bộ đếm word. \\\hline
+
+\sig{i_word_next} & 1 & Input & Xung báo một word đã được chuyển.\newline Tăng chỉ số word w; khi hết hàng, đưa w về 0 và tăng hàng r. \\\hline
+
+\sig{o_spm_addr} & 10 & Output & Địa chỉ word logic của phần tử đang truyền trong scratchpad.\newline Được tạo từ chỉ số hàng r và word w theo i\_wide. \\\hline
+\sig{o_word_idx} & 4 & Output & Bốn bit thấp của số thứ tự word đang truyền.\newline Với FETCH, đây là chỉ số word descriptor từ 0 đến 15. \\\hline
+
 \end{spectable}
 
-\begin{spectable}{L{0.24}L{0.14}L{0.62}}{Địa chỉ scratchpad theo đích (SPM-02)}{tab:5-1}{\textbf{Lệnh} & \textbf{i\_wide} & \textbf{Địa chỉ word n (r = hàng, w = word trong hàng)}}
-LOAD\_A, LOAD\_B & 0 & \{r[4:0], w[2:0]\} = \{i, kw\} hoặc \{k, jw\} \\
-LOAD\_BIAS & 1 & \{0, w[4:0]\} = j \\
-STORE\_C, INT32 & 1 & \{r[4:0], w[4:0]\} = \{i, j\} \\
-STORE\_C, INT8 & 0 & \{r[4:0], w[2:0]\} = \{i, jw\} \\
-FETCH & — & Không dùng SPM; \sig{o_word_idx} = w (0 … 15) \\
+\begin{spectable}{|L{0.24}|L{0.14}|L{0.62}|}{Địa chỉ scratchpad theo đích }{tab:5-1}{\textbf{Lệnh} & \textbf{i\_wide} & \textbf{Địa chỉ word n (r = hàng, w = word trong hàng)}}
+LOAD\_A, LOAD\_B & 0 & \{r[4:0], w[2:0]\} = \{i, kw\} hoặc \{k, jw\} \\\hline
+
+LOAD\_BIAS & 1 & \{0, w[4:0]\} = j \\\hline
+
+STORE\_C, INT32 & 1 & \{r[4:0], w[4:0]\} = \{i, j\} \\\hline
+
+STORE\_C, INT8 & 0 & \{r[4:0], w[2:0]\} = \{i, jw\} \\\hline
+
+FETCH & — & Không dùng SPM; \sig{o_word_idx} = w (0 … 15) \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Chia đoạn và cắt burst}{tab:5-2}
-AG-01 & Lệnh liên tục khi \sig{stride} = 4 · \sig{rwords}: một đoạn dài \sig{rows} · \sig{rwords} word bắt đầu ở base. Ngược lại: \sig{rows} đoạn, đoạn r dài \sig{rwords} word bắt đầu ở base + r · \sig{stride} (DSC-09) \\
-AG-02 & Trong một đoạn, tại địa chỉ a, burst có $\min(\text{số word còn lại của đoạn},\ \texttt{MAX\_BURST\_BEATS},\ (4096 - a \bmod 4096)/4)$ beat (DMA-03). Burst không bao giờ vượt biên 4 KiB và không bao giờ trải qua khoảng hở giữa hai đoạn \\
-AG-03 & \sig{o_burst_*} là thanh ghi, hợp lệ từ chu kỳ sau \sig{i_load} và từ chu kỳ sau \sig{i_burst_next}. Địa chỉ đoạn tính bằng cộng dồn \sig{stride} (không dùng bộ nhân 32 bit); độ dài đoạn liên tục \sig{rows} · \sig{rwords} ≤ 1024 cần bộ nhân 6 × 6 hoặc cộng dồn \\
-AG-04 & Bộ đếm (r, w) độc lập với burst: \sig{i_word_next} tăng w; khi w = \sig{rwords} − 1 thì w ← 0, r ← r + 1 \\
-\end{reqtable}
+
+\paragraph{Chia đoạn và cắt burst}\label{tab:5-2}
+\begin{itemize}
+\item Lệnh liên tục khi \sig{stride} = 4 · \sig{rwords}: một đoạn dài \sig{rows} · \sig{rwords} word bắt đầu ở base. Ngược lại: \sig{rows} đoạn, đoạn r dài \sig{rwords} word bắt đầu ở base + r · \sig{stride}
+\item Trong một đoạn, tại địa chỉ a, burst có $\min(\text{số word còn lại của đoạn},\ \texttt{MAX\_BURST\_BEATS},\ (4096 - a \bmod 4096)/4)$ beat . Burst không bao giờ vượt biên 4 KiB và không bao giờ trải qua khoảng hở giữa hai đoạn
+\item \sig{o_burst_*} là thanh ghi, hợp lệ từ chu kỳ sau \sig{i_load} và từ chu kỳ sau \sig{i_burst_next}. Địa chỉ đoạn tính bằng cộng dồn \sig{stride} (không dùng bộ nhân 32 bit); độ dài đoạn liên tục \sig{rows} · \sig{rwords} ≤ 1024 cần bộ nhân 6 × 6 hoặc cộng dồn
+\item Bộ đếm (r, w) độc lập với burst: \sig{i_word_next} tăng w; khi w = \sig{rwords} − 1 thì w ← 0, r ← r + 1
+\end{itemize}
+
 
 \begin{notebox}[Ví dụ cắt burst]
 LOAD\_A với M = 32, K = 32 liên tục (\sig{lda} = 32): một đoạn 256 word; với \sig{MAX_BURST_BEATS} = 16 và base căn 4 KiB: 16 burst 16 beat. Cùng lệnh với \sig{lda} = 48: 32 đoạn 8 word, mỗi đoạn một burst 8 beat (nếu không vượt 4 KiB), khoảng hở 16 byte giữa hai hàng không bị đọc. Base = 0x0FF8, một đoạn 256 word: burst đầu 2 beat (tới biên 4 KiB), sau đó 15 burst 16 beat và một burst 14 beat.
 \end{notebox}
 
 % ===================== 6 =====================
-\section{\texorpdfstring{\sigc{gemm_dma_rd}}{gemm\_dma\_rd}: kênh đọc}\label{sec:6}
+\subsection{\texorpdfstring{\sigc{gemm_dma_rd}}{gemm\_dma\_rd}: kênh đọc}\label{sec:6}
 
-\begin{spectable}{L{0.13}L{0.55}L{0.32}}{Trạng thái kênh đọc}{tab:6-1}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
-RD\_IDLE & \sig{o_rd_busy} = 0. \sig{i_rd_start}: chốt dst, bank; \sig{agen.i_load}; \sig{err} ← 0, \sig{abort_seen} ← 0 & RD\_ADDR \\
-RD\_ADDR & \sig{arvalid} = 1, \sig{araddr} = \sig{o_burst_addr}, \sig{arlen} = beats − 1, giữ tới khi \sig{arready}; \sig{exp} ← beats, \sig{got} ← 0 & RD\_DATA sau bắt tay AR (\sig{agen.i_burst_next}) \\
-RD\_DATA & \sig{rready} = \sig{i_spm_wr_ready} (dst = 3: 1). Mỗi beat: \sig{got++}; nếu \sig{got} ≤ \sig{exp}: ghi SRAM hoặc xuất descriptor, \sig{agen.i_word_next}; \sig{rresp} ≠ 0 → \sig{err} ← 1. Xử lý \sig{rlast} theo RDC-02 & Khi burst kết thúc: RD\_ADDR nếu còn burst và ¬\sig{err} ∧ ¬\sig{abort_seen}; ngược lại RD\_FIN \\
-RD\_FIN & Phát \sig{o_rd_error} nếu \sig{err}, ngược lại \sig{o_rd_done} & RD\_IDLE \\
+\begin{spectable}{|L{0.13}|L{0.55}|L{0.32}|}{Trạng thái kênh đọc}{tab:6-1}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
+RD\_IDLE & \sig{o_rd_busy} = 0. \sig{i_rd_start}: chốt dst, bank; \sig{agen.i_load}; \sig{err} ← 0, \sig{abort_seen} ← 0 & RD\_ADDR \\\hline
+
+RD\_ADDR & \sig{arvalid} = 1, \sig{araddr} = \sig{o_burst_addr}, \sig{arlen} = beats − 1, giữ tới khi \sig{arready}; \sig{exp} ← beats, \sig{got} ← 0 & RD\_DATA sau bắt tay AR (\sig{agen.i_burst_next}) \\\hline
+
+RD\_DATA & \sig{rready} = \sig{i_spm_wr_ready} (dst = 3: 1). Mỗi beat: \sig{got++}; nếu \sig{got} ≤ \sig{exp}: ghi SRAM hoặc xuất descriptor, \sig{agen.i_word_next}; \sig{rresp} ≠ 0 → \sig{err} ← 1. Xử lý \sig{rlast} theo (\sig{rlast} = 1 ở beat có \sig{got} < \sig{exp}: lỗi, burst kết thúc. Beat có \sig{got} = \sig{exp} mà \sig{rlast} = 0: lỗi, tiếp tục nhận (\sig{rready} = 1) và bỏ mọi beat tới khi \sig{rlast} = 1  ) & Khi burst kết thúc: RD\_ADDR nếu còn burst và ¬\sig{err} ∧ ¬\sig{abort_seen}; ngược lại RD\_FIN \\\hline
+
+RD\_FIN & Phát \sig{o_rd_error} nếu \sig{err}, ngược lại \sig{o_rd_done} & RD\_IDLE \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Kênh đọc}{tab:6-2}
-RDC-01 & Tối đa 1 burst outstanding: AR kế tiếp chỉ được phát sau beat cuối của burst trước (DMA-06) \\
-RDC-02 & \sig{rlast} = 1 ở beat có \sig{got} < \sig{exp}: lỗi, burst kết thúc. Beat có \sig{got} = \sig{exp} mà \sig{rlast} = 0: lỗi, tiếp tục nhận (\sig{rready} = 1) và bỏ mọi beat tới khi \sig{rlast} = 1 (DMA-08) \\
-RDC-03 & Lỗi hoặc abort: không phát AR mới; burst đã phát AR được nhận hết (DMA-07, DMA-09, DMA-10). Abort không đổi kết quả: lệnh bị abort kết thúc bằng done nếu không có lỗi \\
-RDC-04 & Dữ liệu beat lỗi vẫn được ghi vào SRAM (DMA-09 cho phép); FSM không dùng kết quả của lệnh lỗi \\
-RDC-05 & Thông lượng: mỗi chu kỳ một beat khi slave không chèn bọt; giữa hai burst có đúng 1 chu kỳ RD\_ADDR cộng độ trễ AR → R của slave \\
-\end{reqtable}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=0.95cm,y=0.6cm]
-\newcommand{\sname}[2]{\node[anchor=east,font=\scriptsize\ttfamily] at (-0.15,#1) {#2};}
-\foreach \t in {0,...,12}{\draw[muted!40] (\t,0.6) -- (\t,-11.5);}
-\foreach \t in {0,...,11}{\node[font=\tiny,text=muted] at (\t+0.5,0.9) {\t};}
-\newcommand{\hi}[3]{\draw[brand,line width=0.9pt] (#1,#3) -- (#1,#3+0.45) -- (#2,#3+0.45) -- (#2,#3);}
-\newcommand{\lo}[3]{\draw[brand,line width=0.9pt] (#1,#3) -- (#2,#3);}
-\newcommand{\bus}[4]{\draw[data,line width=0.7pt,fill=datasoft] (#1,#3) -- (#1+0.08,#3+0.24) -- (#2-0.08,#3+0.24) -- (#2,#3) -- (#2-0.08,#3-0.24) -- (#1+0.08,#3-0.24) -- cycle; \node[font=\tiny] at ({(#1+#2)/2},#3) {#4};}
-\sname{0}{i\_rd\_start} \lo{0}{0}{-0.2} \hi{0}{1}{-0.2} \lo{1}{12}{-0.2}
-\sname{-1.3}{o\_rd\_busy} \lo{0}{1}{-1.5} \hi{1}{11}{-1.5} \lo{11}{12}{-1.5}
-\sname{-2.6}{m\_axi\_arvalid} \lo{0}{1}{-2.8} \hi{1}{3}{-2.8} \lo{3}{12}{-2.8}
-\sname{-3.9}{m\_axi\_arready} \lo{0}{2}{-4.1} \hi{2}{3}{-4.1} \lo{3}{12}{-4.1}
-\sname{-5.2}{araddr / arlen} \bus{1}{3}{-5.2}{base / 3}
-\sname{-6.5}{m\_axi\_rvalid} \lo{0}{5}{-6.7} \hi{5}{7}{-6.7} \lo{7}{8}{-6.7} \hi{8}{10}{-6.7} \lo{10}{12}{-6.7}
-\sname{-7.8}{m\_axi\_rlast} \lo{0}{9}{-8.0} \hi{9}{10}{-8.0} \lo{10}{12}{-8.0}
-\sname{-9.1}{o\_spm\_wr\_valid} \lo{0}{5}{-9.3} \hi{5}{7}{-9.3} \lo{7}{8}{-9.3} \hi{8}{10}{-9.3} \lo{10}{12}{-9.3}
-\sname{-10.4}{o\_spm\_wr\_addr} \bus{5}{6}{-10.4}{\{0,0\}} \bus{6}{7}{-10.4}{\{0,1\}} \bus{8}{9}{-10.4}{\{1,0\}} \bus{9}{10}{-10.4}{\{1,1\}}
-\sname{-11.7}{o\_rd\_done} \lo{0}{10}{-11.9} \hi{10}{11}{-11.9} \lo{11}{12}{-11.9}
-\end{tikzpicture}
-\caption{LOAD\_A với M = 2, K = 8 (rwords = 2, liên tục): một burst 4 beat; slave nhận AR ở chu kỳ 2, trả beat ở 5, 6, 8, 9; \sigc{o_rd_done} ở chu kỳ 10}\label{fig:6-1}
-\end{figure}
+\paragraph{Kênh đọc}\label{tab:6-2}
+\begin{itemize}
+\item Tối đa 1 burst outstanding: AR kế tiếp chỉ được phát sau beat cuối của burst trước
+\item \sig{rlast} = 1 ở beat có \sig{got} < \sig{exp}: lỗi, burst kết thúc. Beat có \sig{got} = \sig{exp} mà \sig{rlast} = 0: lỗi, tiếp tục nhận (\sig{rready} = 1) và bỏ mọi beat tới khi \sig{rlast} = 1
+\item Lỗi hoặc abort: không phát AR mới; burst đã phát AR được nhận hết . Abort không đổi kết quả: lệnh bị abort kết thúc bằng done nếu không có lỗi
+\item Dữ liệu beat lỗi vẫn được ghi vào SRAM ; FSM không dùng kết quả của lệnh lỗi
+\item Thông lượng: mỗi chu kỳ một beat khi slave không chèn bọt; giữa hai burst có đúng 1 chu kỳ RD\_ADDR cộng độ trễ AR → R của slave
+\end{itemize}
+
+
+
 
 % ===================== 7 =====================
-\section{\texorpdfstring{\sigc{gemm_dma_wr}}{gemm\_dma\_wr}: kênh ghi}\label{sec:7}
+\subsection{\texorpdfstring{\sigc{gemm_dma_wr}}{gemm\_dma\_wr}: kênh ghi}\label{sec:7}
 
-\begin{spectable}{L{0.13}L{0.57}L{0.3}}{Trạng thái kênh ghi}{tab:7-1}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
-WR\_IDLE & \sig{i_wr_start}: chốt fmt, bank; \sig{agen.i_load} với \sig{i_wide} = (fmt = 0); \sig{err}, \sig{abort_seen} ← 0 & WR\_NEXT \\
-WR\_NEXT & 1 chu kỳ: nếu \sig{err} ∨ \sig{abort_seen} ∨ ¬\sig{o_has_burst} thì sang WR\_FIN. Ngược lại nạp \sig{aw_pend} ← 1, \sig{w_left} ← beats, \sig{rd_left} ← beats; \sig{agen.i_burst_next} & WR\_BURST \\
-WR\_BURST & Ba việc song song: (1) \sig{awvalid} = \sig{aw_pend} tới khi \sig{awready}; (2) đọc SRAM: \sig{o_spm_rd_valid} = (\sig{rd_left} > 0) ∧ (\sig{fifo_cnt} + \sig{inflight} < 4); mỗi yêu cầu được nhận: \sig{rd_left--}, \sig{agen.i_word_next}; (3) \sig{wvalid} = FIFO khác rỗng ∧ \sig{w_left} > 0, \sig{wdata} = đầu FIFO, \sig{wlast} = (\sig{w_left} = 1); mỗi bắt tay W: lấy khỏi FIFO, \sig{w_left--} & WR\_RESP khi AW xong và \sig{w_left} = 0 \\
-WR\_RESP & Chờ \sig{bvalid} (\sig{bready} = 1); \sig{bresp} ≠ 0 → \sig{err} ← 1 & WR\_NEXT \\
-WR\_FIN & Phát \sig{o_wr_error} nếu \sig{err}, ngược lại \sig{o_wr_done} & WR\_IDLE \\
+\begin{spectable}{|L{0.13}|L{0.57}|L{0.3}|}{Trạng thái kênh ghi}{tab:7-1}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
+WR\_IDLE & \sig{i_wr_start}: chốt fmt, bank; \sig{agen.i_load} với \sig{i_wide} = (fmt = 0); \sig{err}, \sig{abort_seen} ← 0 & WR\_NEXT \\\hline
+
+WR\_NEXT & 1 chu kỳ: nếu \sig{err} ∨ \sig{abort_seen} ∨ ¬\sig{o_has_burst} thì sang WR\_FIN. Ngược lại nạp \sig{aw_pend} ← 1, \sig{w_left} ← beats, \sig{rd_left} ← beats; \sig{agen.i_burst_next} & WR\_BURST \\\hline
+
+WR\_BURST & Ba việc song song: (1) \sig{awvalid} = \sig{aw_pend} tới khi \sig{awready}; (2) đọc SRAM: \sig{o_spm_rd_valid} = (\sig{rd_left} > 0) ∧ (\sig{fifo_cnt} + \sig{inflight} < 4); mỗi yêu cầu được nhận: \sig{rd_left--}, \sig{agen.i_word_next}; (3) \sig{wvalid} = FIFO khác rỗng ∧ \sig{w_left} > 0, \sig{wdata} = đầu FIFO, \sig{wlast} = (\sig{w_left} = 1); mỗi bắt tay W: lấy khỏi FIFO, \sig{w_left--} & WR\_RESP khi AW xong và \sig{w_left} = 0 \\\hline
+
+WR\_RESP & Chờ \sig{bvalid} (\sig{bready} = 1); \sig{bresp} ≠ 0 → \sig{err} ← 1 & WR\_NEXT \\\hline
+
+WR\_FIN & Phát \sig{o_wr_error} nếu \sig{err}, ngược lại \sig{o_wr_done} & WR\_IDLE \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Kênh ghi}{tab:7-2}
-WRC-01 & \sig{wvalid} không chờ \sig{awready} (DMA-05). Một khi \sig{wvalid} = 1 thì giữ tới bắt tay, vì đầu FIFO chỉ đổi khi bắt tay. \sig{wvalid} được phép về 0 giữa hai beat khi FIFO rỗng \\
-WRC-02 & Burst đã vào WR\_BURST là đã cam kết: mọi beat W của nó và phản hồi B đều được hoàn tất, kể cả khi \sig{abort_seen} = 1 (DMA-10). Abort chỉ được xét ở WR\_NEXT \\
-WRC-03 & Credit: \sig{inflight} = 1 khi có yêu cầu đọc SRAM được nhận ở chu kỳ trước. \sig{i_spm_rd_rvalid} đẩy \sig{i_spm_rd_rdata} vào FIFO. FIFO không bao giờ tràn (assertion) \\
-WRC-04 & Tối đa 1 burst ghi outstanding: AW của burst sau chỉ phát sau khi nhận B của burst trước (DMA-06) \\
-WRC-05 & Độ trễ: \sig{i_wr_start} ở chu kỳ t → \sig{awvalid} và yêu cầu đọc SRAM đầu tiên ở t + 2; beat W đầu tiên sớm nhất ở t + 4; sau đó một beat mỗi chu kỳ khi \sig{wready} = 1 \\
-\end{reqtable}
+
+\paragraph{Kênh ghi}\label{tab:7-2}
+\begin{itemize}
+\item \sig{wvalid} không chờ \sig{awready} . Một khi \sig{wvalid} = 1 thì giữ tới bắt tay, vì đầu FIFO chỉ đổi khi bắt tay. \sig{wvalid} được phép về 0 giữa hai beat khi FIFO rỗng
+\item Burst đã vào WR\_BURST là đã cam kết: mọi beat W của nó và phản hồi B đều được hoàn tất, kể cả khi \sig{abort_seen} = 1 . Abort chỉ được xét ở WR\_NEXT
+\item Credit: \sig{inflight} = 1 khi có yêu cầu đọc SRAM được nhận ở chu kỳ trước. \sig{i_spm_rd_rvalid} đẩy \sig{i_spm_rd_rdata} vào FIFO. FIFO không bao giờ tràn (assertion)
+\item Tối đa 1 burst ghi outstanding: AW của burst sau chỉ phát sau khi nhận B của burst trước
+\item Độ trễ: \sig{i_wr_start} ở chu kỳ t → \sig{awvalid} và yêu cầu đọc SRAM đầu tiên ở t + 2; beat W đầu tiên sớm nhất ở t + 4; sau đó một beat mỗi chu kỳ khi \sig{wready} = 1
+\end{itemize}
+
 
 % ===================== 8 =====================
-\section{Reset, hiện thực, kiểm chứng}\label{sec:8}
+\subsection{Reset, hiện thực, kiểm chứng}\label{sec:8}
 
-\begin{reqtable}{Reset}{tab:8-1}
-RST-D01 & \sig{rst_n} = 0: hai kênh về IDLE; mọi \sig{valid} AXI ra, \sig{o_*_busy}, xung done/error, FIFO về rỗng \\
-RST-D02 & \sig{i_soft_clr}: như RST-D01. FSM chỉ phát \sig{soft_clr} khi cả hai kênh đã rảnh (SFT-02), nên soft clear không bao giờ cắt ngang một giao dịch AXI (assertion AS-08) \\
-\end{reqtable}
 
-\begin{reqtable}{Hiện thực}{tab:8-2}
-IMP-01 & SystemVerilog tổng hợp được, không latch; thanh ghi điều khiển có reset, thanh ghi dữ liệu (địa chỉ, FIFO) không bắt buộc reset \\
-IMP-02 & Tính min ba số của AG-02 bằng so sánh; $(4096 - a \bmod 4096)/4$ = \sig{1024 - a[11:2]} \\
-IMP-03 & \sig{MAX_BURST_BEATS} ngoài 1 … 256 bị chặn lúc elaboration \\
-\end{reqtable}
+\paragraph{Reset}\label{tab:8-1}
+\begin{itemize}
+\item \sig{rst_n} = 0: hai kênh về IDLE; mọi \sig{valid} AXI ra, \sig{o_*_busy}, xung done/error, FIFO về rỗng
+\item \sig{i_soft_clr}: như (\sig{rst_n} = 0: hai kênh về IDLE; mọi \sig{valid} AXI ra, \sig{o_*_busy}, xung done/error, FIFO về rỗng ). FSM chỉ phát \sig{soft_clr} khi cả hai kênh đã rảnh , nên soft clear không bao giờ cắt ngang một giao dịch AXI
+\end{itemize}
 
-\begin{reqtable}{Assertion bắt buộc (SVA)}{tab:8-3}
-AS-01 & \sig{arvalid} ∧ ¬\sig{arready} → ở chu kỳ sau \sig{arvalid} = 1 và \sig{araddr}, \sig{arlen} không đổi; tương tự AW, W (cả \sig{wdata}, \sig{wlast}) \\
-AS-02 & \sig{arvalid} → \sig{arlen} < \sig{MAX_BURST_BEATS} ∧ \sig{araddr[11:2]} + \sig{arlen} ≤ 1023; tương tự AW \\
-AS-03 & Không có AR mới khi burst đọc trước chưa có \sig{rlast}; không có AW mới khi chưa nhận B của burst trước \\
-AS-04 & Số beat W giữa hai lần \sig{wlast} = \sig{awlen} + 1 của burst tương ứng \\
-AS-05 & \sig{i_rd_start} → ¬\sig{o_rd_busy}; mỗi \sig{i_rd_start} có đúng một \sig{o_rd_done} hoặc \sig{o_rd_error}; tương tự kênh ghi \\
-AS-06 & Sau khi \sig{abort_seen} = 1, không có \sig{arvalid} hay \sig{awvalid} nào bật lên mới \\
-AS-07 & FIFO không tràn, không lấy khi rỗng \\
-AS-08 & \sig{i_soft_clr} → cả hai kênh ở IDLE \\
-\end{reqtable}
 
-\begin{spectable}{L{0.5}L{0.5}}{Tài nguyên ước tính}{tab:8-4}{\textbf{Hạng mục} & \textbf{Số lượng}}
-Bộ cộng 32 bit (địa chỉ burst, địa chỉ đoạn) & 4 (2 mỗi kênh) \\
-Bộ nhân 6 × 6 (độ dài đoạn liên tục) & 2 (hoặc cộng dồn) \\
-FIFO ghi & 4 × 32 bit \\
-Thanh ghi trạng thái và tham số & khoảng 2 × 140 bit \\
+
+\paragraph{Hiện thực}\label{tab:8-2}
+\begin{itemize}
+\item SystemVerilog tổng hợp được, không latch; thanh ghi điều khiển có reset, thanh ghi dữ liệu (địa chỉ, FIFO) không bắt buộc reset
+\item Số beat của burst được tính bằng so sánh ba giới hạn: số word còn lại trong đoạn, MAX\_BURST\_BEATS và số word tới biên 4 KiB. Giới hạn cuối bằng \sig{1024 - a[11:2]}.
+\item \sig{MAX_BURST_BEATS} ngoài 1 … 256 bị chặn lúc elaboration
+\end{itemize}
+
+
+
+\paragraph{Assertion bắt buộc (SVA)}\label{tab:8-3}
+\begin{itemize}
+\item \sig{arvalid} ∧ ¬\sig{arready} → ở chu kỳ sau \sig{arvalid} = 1 và \sig{araddr}, \sig{arlen} không đổi; tương tự AW, W (cả \sig{wdata}, \sig{wlast})
+\item \sig{arvalid} → \sig{arlen} < \sig{MAX_BURST_BEATS} ∧ \sig{araddr[11:2]} + \sig{arlen} ≤ 1023; tương tự AW
+\item Không có AR mới khi burst đọc trước chưa có \sig{rlast}; không có AW mới khi chưa nhận B của burst trước
+\item Số beat W giữa hai lần \sig{wlast} = \sig{awlen} + 1 của burst tương ứng
+\item \sig{i_rd_start} → ¬\sig{o_rd_busy}; mỗi \sig{i_rd_start} có đúng một \sig{o_rd_done} hoặc \sig{o_rd_error}; tương tự kênh ghi
+\item Sau khi \sig{abort_seen} = 1, không có \sig{arvalid} hay \sig{awvalid} nào bật lên mới
+\item FIFO không tràn, không lấy khi rỗng
+\item \sig{i_soft_clr} → cả hai kênh ở IDLE
+\end{itemize}
+
+
+\begin{spectable}{|L{0.5}|L{0.5}|}{Tài nguyên ước tính}{tab:8-4}{\textbf{Hạng mục} & \textbf{Số lượng}}
+Bộ cộng 32 bit (địa chỉ burst, địa chỉ đoạn) & 4 (2 mỗi kênh) \\\hline
+
+Bộ nhân 6 × 6 (độ dài đoạn liên tục) & 2 (hoặc cộng dồn) \\\hline
+
+FIFO ghi & 4 × 32 bit \\\hline
+
+Thanh ghi trạng thái và tham số & khoảng 2 × 140 bit \\\hline
+
 \end{spectable}
 
 \begin{notebox}[Kiểm chứng bằng mô hình]
-\sig{gemm_dma_model.py}: (1) 15 000 lệnh ngẫu nhiên (5 loại, stride liên tục hoặc có hở, \sig{MAX_BURST_BEATS} 1 … 256): chuỗi (địa chỉ DRAM, địa chỉ SPM) sinh bởi bảng lệnh của FSM + AG-01 … AG-04 khớp đúng công thức phần tử của spec hệ thống (bảng 2-3 và công thức stride mục 7.2), không burst nào vượt 4 KiB hay trải qua khoảng hở; (2) 1 500 lệnh kênh đọc và 1 500 lệnh kênh ghi với slave ngẫu nhiên, gồm lỗi RESP, \sig{rlast} sớm hoặc trễ, abort: dữ liệu đúng khi không lỗi, không AR sau abort, không burst nào bị bỏ dở.
+\sig{gemm_dma_model.py}: (1) 15 000 lệnh ngẫu nhiên (5 loại, stride liên tục hoặc có hở, \sig{MAX_BURST_BEATS} 1 … 256): chuỗi địa chỉ DRAM và scratchpad khớp công thức base + hàng × stride + 4 × word, không burst nào vượt 4 KiB hay trải qua khoảng hở; (2) 1 500 lệnh kênh đọc và 1 500 lệnh kênh ghi với slave ngẫu nhiên, gồm lỗi RESP, \sig{rlast} sớm hoặc trễ, abort: dữ liệu đúng khi không lỗi, không AR sau abort, không burst nào bị bỏ dở.
 \end{notebox}
 
 \end{document}

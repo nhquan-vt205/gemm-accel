@@ -1,171 +1,238 @@
-% !TEX program = xelatex
-% Spec module gemm_local_sram v1.0 (full option)
 \documentclass[10pt,a4paper]{article}
 \newcommand{\ModHeader}{gemm\_local\_sram}
-\input{preamble}
-
+\input{../../../common/timer_style.tex}
 \begin{document}
-\makecover{gemm\_local\_sram}{Scratchpad chia bank, ping-pong}{Port list, bố cục logic, tổ chức vật lý, ánh xạ địa chỉ, timing}{%
-\textbf{Module} & \sig{gemm_local_sram} (instance \sig{u_sram} trong \sig{gemm_accel_top}) \\
-\textbf{Module con} & \sig{gemm_spm_ram} (RAM một cổng chung), \sig{gemm_spm_a}, \sig{gemm_spm_b}, \sig{gemm_spm_bias}, \sig{gemm_spm_c} \\
-\textbf{Cấu hình} & Bản đầy đủ: NB = 2 bank cho mỗi buffer (\sig{HAS_PINGPONG} = 1). NB = 1 cho bản cơ bản \\
-\textbf{Tuân theo} & Spec hệ thống v1.0: mục 4.3 (OWN-01, OWN-02), mục 5.4 (SPM-01 … SPM-06), mục 7.3 (PP-07). Spec \sig{gemm_systolic_array} mục 3 (cổng A, B), spec \sig{gemm_vpu} mục 3 (cổng BIAS, C, bảng 3-3) \\
-\textbf{Kèm theo} & \sig{gemm_sram_model.py}: mô hình ánh xạ; kiểm song ánh, không xung đột sub-bank, nạp/đọc/ghi khứ hồi với P = 4, 8 và NB = 1, 2 \\}
+{\Large\bfseries ĐẶC TẢ THIẾT KẾ gemm\_local\_sram}\par
+\tableofcontents
+\clearpage
+\section{Tổng quan}
+\subsection{Tính năng chính}\label{sec:1}
 
-% ===================== 1 =====================
-\section{Chức năng}\label{sec:1}
 
-\begin{keypoint}
 Scratchpad giữ bốn buffer logic A, B, C, BIAS, mỗi buffer có NB bank. Phía tính (array, VPU) cần đọc hoặc ghi P phần tử trong một chu kỳ, nên mỗi bank được chia thành nhiều \textbf{sub-bank} một cổng sao cho mỗi truy cập song song chạm các sub-bank khác nhau. Phía DMA đọc hoặc ghi một word mỗi chu kỳ. Hai phía dùng hai bank khác nhau (ping-pong) hoặc hai pha khác nhau (không ping-pong), nên không bao giờ tranh nhau một sub-bank.
-\end{keypoint}
 
-\begin{reqtable}{Chức năng}{tab:1-1}
-SRM-F01 & Mỗi bank có dung lượng đúng SPM-01: A 256 word, B 256 word, C 1024 word, BIAS 32 word; tổng NB × 1568 word (NB = 2: 12,25 KiB) \\
-SRM-F02 & Mọi cổng đọc có độ trễ cố định 1 chu kỳ; mọi lệnh ghi có hiệu lực ở cạnh clock cuối chu kỳ có lệnh; không có backpressure (SPM-04, SPM-05) \\
-SRM-F03 & Mỗi sub-bank vật lý là RAM một cổng đồng bộ. Bank b của buffer X chỉ bị truy cập bởi một phía trong một chu kỳ (PP-07); hai bank khác nhau được truy cập độc lập cùng chu kỳ \\
-SRM-F04 & Nội dung không được khởi tạo bởi \sig{rst_n} hay \sig{soft_clr} (SPM-06) \\
-\end{reqtable}
+
+
+\paragraph{Chức năng}\label{tab:1-1}
+\begin{itemize}
+\item Mỗi bank có dung lượng: A 256 word, B 256 word, C 1024 word, BIAS 32 word; tổng NB × 1568 word (NB = 2: 12,25 KiB)
+\item Mọi cổng đọc có độ trễ cố định 1 chu kỳ; mọi lệnh ghi có hiệu lực ở cạnh clock cuối chu kỳ có lệnh; không có backpressure
+\item Mỗi sub-bank vật lý là RAM một cổng đồng bộ. Bank b của buffer X chỉ bị truy cập bởi một phía trong một chu kỳ ; hai bank khác nhau được truy cập độc lập cùng chu kỳ
+\item Nội dung không được khởi tạo bởi \sig{rst_n} hay \sig{soft_clr}
+\end{itemize}
+
 
 % ===================== 2 =====================
-\section{Tham số}\label{sec:2}
-\begin{spectable}{L{0.2}L{0.14}L{0.66}}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
-\sig{P} & 8 & 4 hoặc 8 \\
-\sig{HAS_PINGPONG} & 1 & 1: NB = 2; 0: NB = 1 \\
-\sig{NB}, \sig{Q}, \sig{LP} & 2, 2, 3 & localparam: số bank; Q = P/4 (số sub-bank của B); LP = $\log_2 P$ \\
+\subsection{Tham số}\label{sec:2}
+\begin{spectable}{|L{0.2}|L{0.14}|L{0.66}|}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
+\sig{P} & 8 & 4 hoặc 8 \\\hline
+
+\sig{HAS_PINGPONG} & 1 & 1: NB = 2; 0: NB = 1 \\\hline
+
+\sig{NB}, \sig{Q}, \sig{LP} & 2, 2, 3 & localparam: số bank; Q = P/4 (số sub-bank của B); LP = $\log_2 P$ \\\hline
+
 \end{spectable}
 
 % ===================== 3 =====================
-\section{Port list}\label{sec:3}
+\subsection{Tín hiệu giao tiếp}\label{sec:3}
 
-\begin{spectable}{L{0.22}L{0.08}L{0.08}L{0.1}L{0.52}}{Port của \sigc{gemm_local_sram}}{tab:3-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Nối với} & \textbf{Mô tả}}
-\sig{clk}, \sig{rst_n}, \sig{i_soft_clr} & 1 × 3 & In & top, FSM & \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng ghi phía DMA (LOAD\_A, LOAD\_B, LOAD\_BIAS)}} \\
-\sig{i_dw_valid} & 1 & In & DMA & Ghi một word \\
-\sig{i_dw_buf} & 2 & In & DMA & 0: A, 1: B, 2: BIAS \\
-\sig{i_dw_bank} & 1 & In & DMA & Bank (bỏ qua khi NB = 1) \\
-\sig{i_dw_addr} & 10 & In & DMA & Địa chỉ word logic (bảng~\ref{tab:4-1}) \\
-\sig{i_dw_data} & 32 & In & DMA & \\
-\sig{o_dw_ready} & 1 & Out & DMA & Luôn bằng 1 \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng đọc phía DMA (STORE\_C)}} \\
-\sig{i_dr_valid}, \sig{i_dr_bank}, \sig{i_dr_addr} & 1, 1, 10 & In & DMA & Đọc một word C, địa chỉ logic \\
-\sig{o_dr_ready} & 1 & Out & DMA & Luôn bằng 1 \\
-\sig{o_dr_rvalid}, \sig{o_dr_rdata} & 1, 32 & Out & DMA & Dữ liệu, 1 chu kỳ sau yêu cầu \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Bank phía tính (từ FSM)}} \\
-\sig{i_comp_bank_a}, \sig{_b}, \sig{_bias}, \sig{_c} & 1 × 4 & In & FSM & Bank array/VPU dùng; ổn định trong COMPUTE \\
-\sig{i_comp_active} & 1 & In & FSM & COMPUTE đang chạy (chỉ dùng cho assertion) \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng đọc A, B (từ array; spec array bảng 3-1)}} \\
-\sig{i_a_rd_en}, \sig{i_a_rd_row}, \sig{i_a_rd_k} & 1, 5, 5 & In & Array & $i_0$ (bội của P), k \\
-\sig{o_a_rd_data} & 8P & Out & Array & Lane r = $A[i_0+r][k]$ \\
-\sig{i_b_rd_en}, \sig{i_b_rd_k}, \sig{i_b_rd_col} & 1, 5, 5 & In & Array & k, $j_0$ (bội của P) \\
-\sig{o_b_rd_data} & 8P & Out & Array & Lane c = $B[k][j_0+c]$ \\
-\midrule
-\multicolumn{5}{@{}l}{\textit{Cổng BIAS và C (từ VPU; spec VPU bảng 3-1)}} \\
-\sig{i_bias_rd_en}, \sig{i_bias_rd_col} & 1, 5 & In & VPU & $j_0$ \\
-\sig{o_bias_rd_data} & 32P & Out & VPU & Lane c = $bias[j_0+c]$ \\
-\sig{i_c_wr_en}, \sig{i_c_wr_fmt}, \sig{i_c_wr_row}, \sig{i_c_wr_col} & 1, 1, 5, 5 & In & VPU & Ghi một đoạn hàng \\
-\sig{i_c_wr_data}, \sig{i_c_wr_mask} & 32P, P & In & VPU & Bảng 3-3 spec VPU \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_local_sram}}{tab:3-1}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{i_soft_clr} & 1 & Input & Xung xóa đồng bộ dài một chu kỳ do Main FSM phát.\newline Xóa trạng thái điều khiển tại cạnh lên; phạm vi xóa dữ liệu được quy định trong mục Reset. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng ghi phía DMA (LOAD\_A, LOAD\_B, LOAD\_BIAS)}} \\\hline
+
+\sig{i_dw_valid} & 1 & Input & Yêu cầu ghi một word 32 bit vào scratchpad.\newline Ghi được nhận khi valid và ready cùng bằng 1 tại cạnh lên. \\\hline
+
+\sig{i_dw_buf} & 2 & Input & Chọn buffer đích cho word ghi.\newline Giá trị 0: A.\newline Giá trị 1: B.\newline Giá trị 2: BIAS; giá trị 3 không hợp lệ. \\\hline
+
+\sig{i_dw_bank} & 1 & Input & Chọn bank đích cho word ghi.\newline Hợp lệ cùng yêu cầu ghi; bỏ qua khi chỉ có một bank. \\\hline
+
+\sig{i_dw_addr} & 10 & Input & Địa chỉ word logic trong buffer đích.\newline A/B dùng miền 0 đến 255; BIAS dùng miền 0 đến 31.\newline Hợp lệ cùng yêu cầu ghi. \\\hline
+
+\sig{i_dw_data} & 32 & Input & Word dữ liệu 32 bit cần ghi vào scratchpad.\newline Hợp lệ cùng yêu cầu ghi; DMA giữ nguyên thứ tự byte của dữ liệu DRAM. \\\hline
+
+\sig{o_dw_ready} & 1 & Output & Báo scratchpad có thể nhận word ghi.\newline Thiết kế SRAM hiện tại luôn giữ bằng 1; giao dịch vẫn được xác định bởi valid và ready. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng đọc phía DMA (STORE\_C)}} \\\hline
+
+\sig{i_dr_valid} & 1 & Input & Yêu cầu đọc một word từ buffer C.\newline Yêu cầu được nhận tại cạnh lên khi valid và ready cùng bằng 1. \\\hline
+\sig{i_dr_bank} & 1 & Input & Chọn bank nguồn của buffer C.\newline Hợp lệ cùng yêu cầu đọc; bỏ qua khi chỉ có một bank. \\\hline
+\sig{i_dr_addr} & 10 & Input & Địa chỉ word logic cần đọc trong buffer C.\newline Hợp lệ cùng yêu cầu đọc; miền địa chỉ phụ thuộc bố cục INT32 hoặc INT8 của C. \\\hline
+
+\sig{o_dr_ready} & 1 & Output & Báo scratchpad có thể nhận yêu cầu đọc C.\newline Thiết kế SRAM hiện tại luôn giữ bằng 1. \\\hline
+
+\sig{o_dr_rvalid} & 1 & Output & Báo word đọc trả về hợp lệ.\newline Xuất hiện đúng một chu kỳ sau yêu cầu được nhận; mỗi yêu cầu có đúng một phản hồi, theo thứ tự. \\\hline
+\sig{o_dr_rdata} & 32 & Output & Word dữ liệu 32 bit đọc từ buffer C.\newline Bên nhận lấy dữ liệu khi read rvalid = 1; không có ready cho kênh trả dữ liệu. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Bank phía tính (từ FSM)}} \\\hline
+
+\sig{i_comp_bank_a} & 1 & Input & Chọn bank của buffer A dành cho phía tính.\newline Giữ nguyên trong suốt COMPUTE; khi chỉ có một bank thì dùng bank 0. \\\hline
+\sig{i_comp_bank_b} & 1 & Input & Chọn bank của buffer B dành cho phía tính.\newline Giữ nguyên trong suốt COMPUTE; khi chỉ có một bank thì dùng bank 0. \\\hline
+\sig{i_comp_bank_bias} & 1 & Input & Chọn bank của buffer BIAS dành cho phía tính.\newline Giữ nguyên trong suốt COMPUTE; khi chỉ có một bank thì dùng bank 0. \\\hline
+\sig{i_comp_bank_c} & 1 & Input & Chọn bank của buffer C dành cho phía tính.\newline Giữ nguyên trong suốt COMPUTE; khi chỉ có một bank thì dùng bank 0. \\\hline
+
+\sig{i_comp_active} & 1 & Input & Báo COMPUTE đang hoạt động.\newline SRAM dùng tín hiệu này để kiểm tra quyền truy cập bằng assertion; tín hiệu không thay thế các enable đọc/ghi. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng đọc A, B (từ array)}} \\\hline
+
+\sig{i_a_rd_en} & 1 & Input & Cho phép đọc một vector A.\newline Địa chỉ hợp lệ trong chu kỳ enable = 1; dữ liệu trả về đúng một chu kỳ sau. \\\hline
+\sig{i_a_rd_row} & 5 & Input & Hàng đầu i0 của vector A.\newline Là bội của P; hợp lệ cùng read enable. \\\hline
+\sig{i_a_rd_k} & 5 & Input & Chỉ số k của cột A cần đọc.\newline Hợp lệ cùng read enable; phải nhỏ hơn K. \\\hline
+
+\sig{o_a_rd_data} & 8P & Output & Vector P byte INT8 của A.\newline Lane r tại bit [8r +: 8] chứa A[i0+r][k].\newline Hợp lệ một chu kỳ sau yêu cầu đọc; lane ngoài miền tác vụ có thể chứa giá trị bất kỳ. \\\hline
+
+\sig{i_b_rd_en} & 1 & Input & Cho phép đọc một vector B.\newline Địa chỉ hợp lệ trong chu kỳ enable = 1; dữ liệu trả về đúng một chu kỳ sau. \\\hline
+\sig{i_b_rd_k} & 5 & Input & Chỉ số k của hàng B cần đọc.\newline Hợp lệ cùng read enable; phải nhỏ hơn K. \\\hline
+\sig{i_b_rd_col} & 5 & Input & Cột đầu j0 của vector B.\newline Là bội của P; hợp lệ cùng read enable. \\\hline
+
+\sig{o_b_rd_data} & 8P & Output & Vector P byte INT8 của B.\newline Lane c tại bit [8c +: 8] chứa B[k][j0+c].\newline Hợp lệ một chu kỳ sau yêu cầu đọc; lane ngoài miền tác vụ có thể chứa giá trị bất kỳ. \\\hline
+
+
+\multicolumn{4}{@{}l}{\textit{Cổng BIAS và C (từ VPU)}} \\\hline
+
+\sig{i_bias_rd_en} & 1 & Input & Yêu cầu đọc P phần tử bias.\newline Bằng 1 khi đoạn hàng hợp lệ và hậu xử lý được bật; dữ liệu về sau một chu kỳ. \\\hline
+\sig{i_bias_rd_col} & 5 & Input & Cột đầu j0 của vector bias.\newline Là bội của P; hợp lệ cùng bias read enable. \\\hline
+
+\sig{o_bias_rd_data} & 32P & Output & Vector P giá trị bias INT32.\newline Lane c tại bit [32c +: 32] chứa bias[j0+c].\newline Hợp lệ đúng một chu kỳ sau yêu cầu; lane bị mask có thể chứa giá trị bất kỳ. \\\hline
+
+\sig{i_c_wr_en} & 1 & Input & Cho phép ghi một đoạn hàng kết quả vào buffer C tại cạnh lên.\newline Các trường fmt, row, col, data và mask phải hợp lệ trong chu kỳ này. \\\hline
+\sig{i_c_wr_fmt} & 1 & Input & Chọn định dạng phần tử ghi C.\newline Giá trị 0: INT32, mỗi phần tử là một word.\newline Giá trị 1: INT8, mỗi phần tử là một byte.\newline Hợp lệ cùng write enable. \\\hline
+\sig{i_c_wr_row} & 5 & Input & Chỉ số hàng i của buffer C cần ghi.\newline Hợp lệ cùng write enable. \\\hline
+\sig{i_c_wr_col} & 5 & Input & Cột đầu j0 của đoạn hàng cần ghi.\newline Là bội của P; hợp lệ cùng write enable. \\\hline
+
+\sig{i_c_wr_data} & 32P & Input & Dữ liệu ghi đoạn hàng C.\newline Với fmt = 0, phần tử c nằm tại bit [32c +: 32].\newline Với fmt = 1, phần tử c nằm tại bit [8c +: 8] và phần cao còn lại bằng 0.\newline Hợp lệ cùng write enable. \\\hline
+\sig{i_c_wr_mask} & P & Input & Cho phép ghi theo phần tử.\newline Bit c = 1 ghi phần tử c theo định dạng fmt; bit c = 0 giữ nguyên phần tử đó.\newline Hợp lệ cùng write enable. \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Giao tiếp}{tab:3-2}
-SRM-I01 & \sig{o_dw_ready} = \sig{o_dr_ready} = 1 hằng số. DMA vẫn phải tôn trọng bắt tay để giữ đúng SPM-05 \\
-SRM-I02 & \sig{o_a_rd_data}, \sig{o_b_rd_data}, \sig{o_bias_rd_data} hợp lệ ở đúng chu kỳ sau chu kỳ có \sig{*_rd_en}; ở chu kỳ khác giá trị tùy ý. \sig{o_dr_rvalid} là thanh ghi \\
-SRM-I03 & Lane ứng với hàng hoặc cột ngoài vùng hợp lệ của tác vụ mang nội dung tùy ý (SPM-03, SA-10) \\
-\end{reqtable}
+
+\paragraph{Giao tiếp}\label{tab:3-2}
+\begin{itemize}
+\item \sig{o_dw_ready} và \sig{o_dr_ready} luôn bằng 1. Lệnh chỉ được nhận khi valid và ready cùng bằng 1. Mỗi chu kỳ nhận một word ghi và một yêu cầu đọc; mỗi yêu cầu đọc có đúng một phản hồi theo thứ tự.
+\item \sig{o_a_rd_data}, \sig{o_b_rd_data}, \sig{o_bias_rd_data} hợp lệ ở đúng chu kỳ sau chu kỳ có \sig{*_rd_en}; ở chu kỳ khác giá trị tùy ý. \sig{o_dr_rvalid} là thanh ghi
+\item Lane ứng với hàng hoặc cột ngoài vùng hợp lệ của tác vụ mang nội dung tùy ý
+\end{itemize}
+
 
 % ===================== 4 =====================
-\section{Bố cục logic}\label{sec:4}
 
-\begin{spectable}{L{0.12}L{0.25}L{0.63}}{Địa chỉ word logic trong mỗi bank (SPM-02)}{tab:4-1}{\textbf{Buffer} & \textbf{Địa chỉ a} & \textbf{Nội dung word}}
-A & \{i[4:0], kw[2:0]\} & Byte e = $A[i][4kw + e]$ \\
-B & \{k[4:0], jw[2:0]\} & Byte e = $B[k][4jw + e]$ \\
-BIAS & j[4:0] & $bias[j]$ \\
-C, INT32 & \{i[4:0], j[4:0]\} & $C[i][j]$ \\
-C, INT8 & \{i[4:0], jw[2:0]\} & Byte e = $Y[i][4jw + e]$ (dùng word 0 … 255) \\
+
+\subsection{Điều kiện phục vụ đồng thời}
+Trong một chu kỳ SRAM phải phục vụ đồng thời một lần đọc A (P byte từ P hàng), một lần đọc B (P byte liền nhau), một lần đọc BIAS (P word) và một lần ghi C (P phần tử có mask). Hai phía tính và DMA được chạy đồng thời trên các bank khác nhau. Khi NB = 1, môi trường chỉ cho phép một phía hoạt động tại một thời điểm.
+Đọc A/B/BIAS trả dữ liệu ở chu kỳ kế tiếp; bên nhận chỉ dùng các lane hợp lệ. Ghi C với fmt = 0 lấy phần tử c từ data[32c +: 32] và mask[c] cho phép ghi cả word. Với fmt = 1, lấy byte c từ data[8c +: 8], mask[c] cho phép ghi byte đó; phần cao của data bằng 0. Hàng/cột đầu phải hợp lệ và cột đầu là bội của P. Mask chặn các phần tử ngoài miền tác vụ.
+Mỗi yêu cầu đọc DMA được nhận phải tạo đúng một rvalid ở chu kỳ tiếp theo, theo đúng thứ tự; không có ready cho dữ liệu trả về. Nội dung RAM và các lane không hợp lệ không cần khởi tạo, và được phép chứa X trong mô phỏng.
+\section{Đặc tả thanh ghi}
+Module không có thanh ghi ánh xạ MMIO. Cấu hình được nhận qua các tín hiệu đầu vào; trạng thái nội bộ, điều kiện chốt và reset được mô tả bên dưới.
+\section{Mô tả chức năng}
+\subsection{Bố cục logic}\label{sec:4}
+
+\begin{spectable}{|L{0.12}|L{0.25}|L{0.63}|}{Địa chỉ word logic trong mỗi bank }{tab:4-1}{\textbf{Buffer} & \textbf{Địa chỉ a} & \textbf{Nội dung word}}
+A & \{i[4:0], kw[2:0]\} & Byte e = $A[i][4kw + e]$ \\\hline
+
+B & \{k[4:0], jw[2:0]\} & Byte e = $B[k][4jw + e]$ \\\hline
+
+BIAS & j[4:0] & $bias[j]$ \\\hline
+
+C, INT32 & \{i[4:0], j[4:0]\} & $C[i][j]$ \\\hline
+
+C, INT8 & \{i[4:0], jw[2:0]\} & Byte e = $Y[i][4jw + e]$ (dùng word 0 … 255) \\\hline
+
 \end{spectable}
 
 % ===================== 5 =====================
-\section{Tổ chức vật lý và ánh xạ}\label{sec:5}
+\subsection{Tổ chức vật lý và ánh xạ}\label{sec:5}
 
-\begin{spectable}{L{0.11}L{0.13}L{0.2}L{0.2}L{0.36}}{Sub-bank của mỗi bank}{tab:5-1}{\textbf{Buffer} & \textbf{Số sub-bank} & \textbf{Sâu × rộng} & \textbf{Sub-bank của a} & \textbf{Địa chỉ cục bộ}}
-A & P & (256/P) × 32 & i mod P & \{i[4:LP], kw\} \\
-B & Q = P/4 & (256/Q) × 32 & jw mod Q & \{k, jw » log$_2$Q\} \\
-BIAS & P & (32/P) × 32 & j mod P & j » LP \\
-C & P & (1024/P) × 32, ghi theo byte & a mod P & a » LP \\
+\begin{spectable}{|L{0.11}|L{0.13}|L{0.2}|L{0.2}|L{0.36}|}{Sub-bank của mỗi bank}{tab:5-1}{\textbf{Buffer} & \textbf{Số sub-bank} & \textbf{Sâu × rộng} & \textbf{Sub-bank của a} & \textbf{Địa chỉ cục bộ}}
+A & P & (256/P) × 32 & i mod P & \{i[4:LP], kw\} \\\hline
+
+B & Q = P/4 & (256/Q) × 32 & jw mod Q & \{k, jw » log$_2$Q\} \\\hline
+
+BIAS & P & (32/P) × 32 & j mod P & j » LP \\\hline
+
+C & P & (1024/P) × 32, ghi theo byte & a mod P & a » LP \\\hline
+
 \end{spectable}
 
-\begin{spectable}{L{0.2}L{0.2}L{0.2}L{0.2}L{0.2}}{Số RAM vật lý}{tab:5-2}{\textbf{Cấu hình} & \textbf{A} & \textbf{B} & \textbf{BIAS} & \textbf{C}}
-P = 4, NB = 1 & 4 × 64 & 1 × 256 & 4 × 8 & 4 × 256 \\
-P = 8, NB = 1 & 8 × 32 & 2 × 128 & 8 × 4 & 8 × 128 \\
-P = 8, NB = 2 & 16 × 32 & 4 × 128 & 16 × 4 & 16 × 128 \\
+\begin{spectable}{|L{0.2}|L{0.2}|L{0.2}|L{0.2}|L{0.2}|}{Số RAM vật lý}{tab:5-2}{\textbf{Cấu hình} & \textbf{A} & \textbf{B} & \textbf{BIAS} & \textbf{C}}
+P = 4, NB = 1 & 4 × 64 & 1 × 256 & 4 × 8 & 4 × 256 \\\hline
+
+P = 8, NB = 1 & 8 × 32 & 2 × 128 & 8 × 4 & 8 × 128 \\\hline
+
+P = 8, NB = 2 & 16 × 32 & 4 × 128 & 16 × 4 & 16 × 128 \\\hline
+
 \end{spectable}
 
-\subsection{Truy cập phía tính}
-\begin{reqtable}{Cổng phía tính (b = \sigc{i_comp_bank_*})}{tab:5-3}
-MAP-01 & Đọc A ($i_0$, k): sub-bank r (0 ≤ r < P) của A[b] đọc địa chỉ \{$i_0$[4:LP], k[4:2]\}. Lane r = byte k[1:0] của sub-bank r; k[1:0] được chốt để chọn byte ở chu kỳ sau \\
-MAP-02 & Đọc B (k, $j_0$): sub-bank s (0 ≤ s < Q) của B[b] đọc \{k, ($j_0$ » 2) » log$_2$Q\}. Lane c = byte (c mod 4) của sub-bank c/4 \\
-MAP-03 & Đọc BIAS ($j_0$): sub-bank c của BIAS[b] đọc $j_0$ » LP; lane c = sub-bank c \\
-MAP-04 & Ghi C INT32 (i, $j_0$): lane c ghi sub-bank c của C[b] tại (\{i, $j_0$\} » LP), cả 4 byte, nếu \sig{mask[c]} \\
-MAP-05 & Ghi C INT8 (i, $j_0$): word thứ w (0 ≤ w < Q) của đoạn hàng có địa chỉ a = \{i, $j_0$/4 + w\}, nằm ở sub-bank s = ($j_0$/4 + w) mod P, địa chỉ a » LP. Sub-bank s nhận word w = (s − $j_0$/4) mod P nếu w < Q; byte e của nó = \sig{i_c_wr_data[8(4w+e) +: 8]}, byte enable e = \sig{mask[4w+e]} \\
-\end{reqtable}
+\subsubsection{Truy cập phía tính}
 
-\subsection{Truy cập phía DMA}
-\begin{reqtable}{Cổng DMA}{tab:5-4}
-MAP-06 & Ghi \sig{i_dw_*}: sub-bank và địa chỉ cục bộ theo bảng~\ref{tab:5-1} với a = \sig{i_dw_addr}, trong buffer \sig{i_dw_buf}, bank \sig{i_dw_bank}; cả 4 byte \\
-MAP-07 & Đọc \sig{i_dr_*}: sub-bank (a mod P) của C[\sig{i_dr_bank}], địa chỉ a » LP. Số sub-bank và bank được chốt để chọn dữ liệu ra ở chu kỳ sau \\
-\end{reqtable}
+\paragraph{Cổng phía tính (b = \sigc{i_comp_bank_*})}\label{tab:5-3}
+\begin{itemize}
+\item Đọc A ($i_0$, k): sub-bank r (0 ≤ r < P) của A[b] đọc địa chỉ \{$i_0$[4:LP], k[4:2]\}. Lane r = byte k[1:0] của sub-bank r; k[1:0] được chốt để chọn byte ở chu kỳ sau
+\item Đọc B (k, $j_0$): sub-bank s (0 ≤ s < Q) của B[b] đọc \{k, ($j_0$ » 2) » log$_2$Q\}. Lane c = byte (c mod 4) của sub-bank c/4
+\item Đọc BIAS ($j_0$): sub-bank c của BIAS[b] đọc $j_0$ » LP; lane c = sub-bank c
+\item Ghi C INT32 (i, $j_0$): lane c ghi sub-bank c của C[b] tại (\{i, $j_0$\} » LP), cả 4 byte, nếu \sig{mask[c]}
+\item Ghi C INT8 (i, $j_0$): word thứ w (0 ≤ w < Q) của đoạn hàng có địa chỉ a = \{i, $j_0$/4 + w\}, nằm ở sub-bank s = ($j_0$/4 + w) mod P, địa chỉ a » LP. Sub-bank s nhận word w = (s − $j_0$/4) mod P nếu w < Q; byte e của nó = \sig{i_c_wr_data[8(4w+e) +: 8]}, byte enable e = \sig{mask[4w+e]}
+\end{itemize}
+
+
+\subsubsection{Truy cập phía DMA}
+
+\paragraph{Cổng DMA}\label{tab:5-4}
+\begin{itemize}
+\item Ghi \sig{i_dw_*}: sub-bank và địa chỉ cục bộ theo bảng Sub-bank của mỗi bank với a = \sig{i_dw_addr}, trong buffer \sig{i_dw_buf}, bank \sig{i_dw_bank}; cả 4 byte
+\item Đọc \sig{i_dr_*}: sub-bank (a mod P) của C[\sig{i_dr_bank}], địa chỉ a » LP. Số sub-bank và bank được chốt để chọn dữ liệu ra ở chu kỳ sau
+\end{itemize}
+
 
 \begin{notebox}[Vì sao không bao giờ xung đột]
 $i_0$ và $j_0$ là bội của P, nên P hàng của một đọc A rơi vào P sub-bank khác nhau, P cột của một đọc BIAS hoặc ghi C INT32 cũng vậy; Q word của một đọc B hoặc ghi C INT8 nằm liền nhau nên rơi vào Q sub-bank khác nhau. Ở INT8, \{i, jw\} = 8i + jw và 8i chia hết cho P, nên sub-bank chỉ phụ thuộc jw. Mô hình kiểm đủ mọi (i$_0$, k), (k, j$_0$), mọi đoạn hàng C, với P = 4, 8.
 \end{notebox}
 
-\subsection{Chọn bên truy cập}
-\begin{reqtable}{Mux cổng của mỗi sub-bank (X, b, s)}{tab:5-5}
-MUX-01 & \sig{dma_sel} = lệnh DMA (ghi \sig{i_dw_*} cho A, B, BIAS; đọc \sig{i_dr_*} cho C) có buffer X, bank b và sub-bank s \\
-MUX-02 & \sig{cmp_sel} = lệnh phía tính tương ứng (\sig{i_a_rd_en}, \sig{i_b_rd_en}, \sig{i_bias_rd_en}, \sig{i_c_wr_en} với byte enable khác 0 cho s) và \sig{i_comp_bank_X} = b \\
-MUX-03 & RAM: \sig{en = dma_sel ∨ cmp_sel}; địa chỉ, dữ liệu, byte enable lấy từ bên được chọn. Nếu cả hai (vi phạm, AS-02), DMA thắng \\
-MUX-04 & Không cần tín hiệu pha: quyền truy cập do bank và lịch của FSM bảo đảm (SB-01, SB-02 spec FSM) \\
-\end{reqtable}
+\subsubsection{Chọn bên truy cập}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[x=1cm,y=1cm,scale=0.88,transform shape]
-\draw[brand,line width=1pt,rounded corners=3pt,fill=cream] (0,0) rectangle (16.6,6.4);
-\node[anchor=north west,font=\headfont\bfseries\small,text=brand] at (0.1,6.35) {gemm\_spm\_a (P = 8, NB = 2)};
-\foreach \b/\y in {0/3.9,1/1.1}{
-  \draw[brandline,dashed,rounded corners=2pt] (3.0,\y-0.7) rectangle (12.2,\y+1.5);
-  \node[anchor=north west,font=\scriptsize\bfseries,text=brand] at (3.05,\y+1.45) {bank \b};
-  \foreach \s in {0,...,7}{\node[blkd,minimum width=0.95cm,minimum height=0.8cm,font=\tiny,align=center] at (3.75+\s*1.1,\y+0.3) {sub \s\\32×32};}}
-\node[blk,minimum width=2.2cm,minimum height=1.2cm,font=\scriptsize] (dm) at (1.4,5.0) {DMA ghi\\i\_dw\_*};
-\node[blk,minimum width=2.2cm,minimum height=1.2cm,font=\scriptsize] (ar) at (1.4,1.6) {Array đọc\\i\_a\_rd\_*};
-\draw[ctl] (dm.east) -- (3.0,4.2); \draw[ctl] (dm.east) -- (3.0,1.4);
-\draw[ctl] (ar.east) -- (3.0,4.0); \draw[ctl] (ar.east) -- (3.0,1.2);
-\node[blk,minimum width=3.0cm,minimum height=1.4cm,font=\scriptsize,align=center] (mx) at (14.4,2.8) {chọn bank b\\chọn byte k[1:0]\\→ o\_a\_rd\_data};
-\draw[dat] (12.2,4.2) -- (mx.north west); \draw[dat] (12.2,1.4) -- (mx.south west);
-\node[font=\scriptsize,text=muted,align=left,anchor=west] at (3.1,-0.3) {Mỗi sub-bank: mux cổng (MUX-01 … 03). Ping-pong: DMA vào bank này, array đọc bank kia cùng chu kỳ.};
-\end{tikzpicture}
-\caption{Ví dụ buffer A với P = 8, NB = 2: 16 RAM 32 word}\label{fig:5-1}
-\end{figure}
+\paragraph{Mux cổng của mỗi sub-bank (X, b, s)}\label{tab:5-5}
+\begin{itemize}
+\item \sig{dma_sel} = lệnh DMA (ghi \sig{i_dw_*} cho A, B, BIAS; đọc \sig{i_dr_*} cho C) có buffer X, bank b và sub-bank s
+\item \sig{cmp_sel} = lệnh phía tính tương ứng (\sig{i_a_rd_en}, \sig{i_b_rd_en}, \sig{i_bias_rd_en}, \sig{i_c_wr_en} với byte enable khác 0 cho s) và \sig{i_comp_bank_X} = b
+\item RAM: \sig{en = dma_sel ∨ cmp_sel}; địa chỉ, dữ liệu, byte enable lấy từ bên được chọn. Nếu cả hai , DMA thắng
+\item Không cần tín hiệu pha: quyền truy cập do bank và lịch của FSM bảo đảm
+\end{itemize}
+
+
+
 
 % ===================== 6 =====================
-\section{Module con}\label{sec:6}
+\subsection{Module con}\label{sec:6}
 
-\begin{spectable}{L{0.2}L{0.17}L{0.08}L{0.55}}{Port của \sigc{gemm_spm_ram} (tham số DEPTH, BE)}{tab:6-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-\sig{clk} & 1 & In & \\
-\sig{i_en}, \sig{i_we} & 1, 1 & In & Truy cập; ghi \\
-\sig{i_be} & 4 & In & Byte enable (BE = 0: bỏ qua, ghi cả word) \\
-\sig{i_addr} & $\lceil\log_2 \text{DEPTH}\rceil$ & In & \\
-\sig{i_wdata}, \sig{o_rdata} & 32, 32 & In, Out & \sig{o_rdata} hợp lệ 1 chu kỳ sau \sig{i_en} ∧ ¬\sig{i_we} \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Tín hiệu giao tiếp của \sigc{gemm_spm_ram} (tham số DEPTH, BE)}{tab:6-1}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}}
+\sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+
+\sig{i_en} & 1 & Input & Cho phép truy cập RAM tại cạnh lên.\newline Khi bằng 0, không có lệnh đọc hoặc ghi mới. \\\hline
+\sig{i_we} & 1 & Input & Chọn thao tác RAM khi i\_en = 1.\newline Giá trị 1: ghi; 0: đọc đồng bộ. \\\hline
+
+\sig{i_be} & 4 & Input & Cho phép ghi từng byte của word.\newline Khi tham số BE = 1, bit b điều khiển byte b; khi BE = 0, bỏ qua mặt nạ và ghi cả word. \\\hline
+
+\sig{i_addr} & $\lceil\log_2 \text{DEPTH}\rceil$ & Input & Địa chỉ word trong RAM con, từ 0 đến DEPTH − 1.\newline Được lấy mẫu cùng i\_en tại cạnh lên. \\\hline
+
+\sig{i_wdata} & 32 & Input & Word 32 bit ghi vào RAM khi i\_en và i\_we cùng bằng 1.\newline Các byte thực sự được cập nhật theo mặt nạ i\_be. \\\hline
+\sig{o_rdata} & 32 & Output & Word 32 bit đọc từ RAM.\newline Hợp lệ một chu kỳ sau lệnh có i\_en = 1 và i\_we = 0. \\\hline
+
 \end{spectable}
 
-\begin{spectable}{L{0.2}L{0.8}}{Module con theo buffer}{tab:6-2}{\textbf{Module} & \textbf{Nội dung}}
-\sig{gemm_spm_a} & NB × P RAM; MAP-01, MAP-06; chốt k[1:0] và bank cho mux byte \\
-\sig{gemm_spm_b} & NB × Q RAM; MAP-02, MAP-06 \\
-\sig{gemm_spm_bias} & NB × P RAM (được hiện thực bằng thanh ghi vì chỉ 4 hoặc 8 word mỗi RAM); MAP-03, MAP-06 \\
-\sig{gemm_spm_c} & NB × P RAM có byte enable; MAP-04, MAP-05, MAP-07; mux xoay word ở INT8; chốt sub-bank, bank cho \sig{o_dr_rdata} \\
+\begin{spectable}{|L{0.2}|L{0.8}|}{Module con theo buffer}{tab:6-2}{\textbf{Module} & \textbf{Nội dung}}
+\sig{gemm_spm_a} & NB × P RAM; phục vụ đọc vector A và ghi word DMA; chốt k[1:0] và bank để chọn byte trả về. \\\hline
+
+\sig{gemm_spm_b} & NB × Q RAM; phục vụ đọc vector B và ghi word DMA; chốt bank để chọn dữ liệu trả về. \\\hline
+
+\sig{gemm_spm_bias} & NB × P RAM; dùng thanh ghi vì mỗi RAM chỉ sâu 4 hoặc 8 word; đọc vector bias và ghi word DMA. \\\hline
+
+\sig{gemm_spm_c} & NB × P RAM có byte enable; ghi đoạn hàng INT32/INT8 và đọc word DMA; xoay word khi ghi INT8, chốt bank và sub-bank để chọn dữ liệu đọc. \\\hline
+
 \end{spectable}
 
 \begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
@@ -182,36 +249,48 @@ always_ff @(posedge clk)
 \end{Verbatim}
 
 % ===================== 7 =====================
-\section{Timing}\label{sec:7}
-\begin{spectable}{L{0.42}L{0.29}L{0.29}}{Thời điểm (t = chu kỳ có lệnh)}{tab:7-1}{\textbf{Cổng} & \textbf{Lệnh} & \textbf{Kết quả}}
-A, B, BIAS đọc & t & dữ liệu ở t + 1 \\
-C ghi (VPU), A/B/BIAS ghi (DMA) & t & có trong RAM từ t + 1 \\
-C đọc (DMA) & t & \sig{o_dr_rvalid} = 1, dữ liệu ở t + 1 \\
+\subsection{Timing}\label{sec:7}
+\begin{spectable}{|L{0.42}|L{0.29}|L{0.29}|}{Thời điểm (t = chu kỳ có lệnh)}{tab:7-1}{\textbf{Cổng} & \textbf{Lệnh} & \textbf{Kết quả}}
+A, B, BIAS đọc & t & dữ liệu ở t + 1 \\\hline
+
+C ghi (VPU), A/B/BIAS ghi (DMA) & t & có trong RAM từ t + 1 \\\hline
+
+C đọc (DMA) & t & \sig{o_dr_rvalid} = 1, dữ liệu ở t + 1 \\\hline
+
 \end{spectable}
 
 % ===================== 8 =====================
-\section{Reset, hiện thực, kiểm chứng}\label{sec:8}
-\begin{reqtable}{Reset}{tab:8-1}
-RST-S01 & \sig{rst_n} = 0 hoặc \sig{i_soft_clr}: \sig{o_dr_rvalid} về 0. Thanh ghi chọn byte, bank, sub-bank và nội dung RAM không bị reset \\
-\end{reqtable}
+\subsection{Reset, hiện thực, kiểm chứng}\label{sec:8}
 
-\begin{reqtable}{Hiện thực}{tab:8-2}
-IMP-01 & RAM viết theo mẫu \sig{gemm_spm_ram} để công cụ suy ra block RAM hoặc LUTRAM có đọc đồng bộ. Không được dùng RAM đọc bất đồng bộ cho A, B, C (sai timing SRM-F02) \\
-IMP-02 & Không có mux tổ hợp từ \sig{*_rd_en} tới dữ liệu ra; đường ra là: thanh ghi đầu ra RAM → mux bank → mux byte/lane \\
-IMP-03 & Mỗi buffer trong file riêng; NB và số sub-bank dựng bằng \sig{generate} \\
-\end{reqtable}
+\paragraph{Reset}\label{tab:8-1}
+\begin{itemize}
+\item \sig{rst_n} = 0 hoặc \sig{i_soft_clr}: \sig{o_dr_rvalid} về 0. Thanh ghi chọn byte, bank, sub-bank và nội dung RAM không bị reset
+\end{itemize}
 
-\begin{reqtable}{Assertion bắt buộc (SVA)}{tab:8-3}
-AS-01 & \sig{i_dw_valid} → \sig{i_dw_buf} ≠ 3 ∧ địa chỉ trong miền của buffer (A, B < 256; BIAS < 32) \\
-AS-02 & NB = 2: \sig{i_dw_valid} ∧ \sig{i_comp_active} → \sig{i_dw_bank} ≠ \sig{i_comp_bank_X} với X = \sig{i_dw_buf}; và \sig{i_dr_valid} ∧ \sig{i_comp_active} → \sig{i_dr_bank} ≠ \sig{i_comp_bank_c}. NB = 1: \sig{i_dw_valid} ∨ \sig{i_dr_valid} → ¬\sig{i_comp_active} (OWN-02) \\
-AS-03 & \sig{i_a_rd_en} ∨ \sig{i_b_rd_en} ∨ \sig{i_bias_rd_en} ∨ \sig{i_c_wr_en} → \sig{i_comp_active} \\
-AS-04 & Không sub-bank nào có \sig{dma_sel} ∧ \sig{cmp_sel} cùng chu kỳ \\
-AS-05 & \sig{i_a_rd_row}, \sig{i_b_rd_col}, \sig{i_bias_rd_col}, \sig{i_c_wr_col} là bội của P khi có lệnh \\
-\end{reqtable}
+
+
+\paragraph{Hiện thực}\label{tab:8-2}
+\begin{itemize}
+\item RAM viết theo mẫu \sig{gemm_spm_ram} để công cụ suy ra block RAM hoặc LUTRAM có đọc đồng bộ. Không được dùng RAM đọc bất đồng bộ cho A, B, C
+\item Không có mux tổ hợp từ \sig{*_rd_en} tới dữ liệu ra; đường ra là: thanh ghi đầu ra RAM → mux bank → mux byte/lane
+\item Mỗi buffer trong file riêng; NB và số sub-bank dựng bằng \sig{generate}
+\end{itemize}
+
+
+
+\paragraph{Assertion bắt buộc (SVA)}\label{tab:8-3}
+\begin{itemize}
+\item \sig{i_dw_valid} → \sig{i_dw_buf} ≠ 3 ∧ địa chỉ trong miền của buffer (A, B < 256; BIAS < 32)
+\item NB = 2: \sig{i_dw_valid} ∧ \sig{i_comp_active} → \sig{i_dw_bank} ≠ \sig{i_comp_bank_X} với X = \sig{i_dw_buf}; và \sig{i_dr_valid} ∧ \sig{i_comp_active} → \sig{i_dr_bank} ≠ \sig{i_comp_bank_c}. NB = 1: \sig{i_dw_valid} ∨ \sig{i_dr_valid} → ¬\sig{i_comp_active}
+\item \sig{i_a_rd_en} ∨ \sig{i_b_rd_en} ∨ \sig{i_bias_rd_en} ∨ \sig{i_c_wr_en} → \sig{i_comp_active}
+\item Không sub-bank nào có \sig{dma_sel} ∧ \sig{cmp_sel} cùng chu kỳ
+\item \sig{i_a_rd_row}, \sig{i_b_rd_col}, \sig{i_bias_rd_col}, \sig{i_c_wr_col} là bội của P khi có lệnh
+\end{itemize}
+
 
 \Needspace{8\baselineskip}
 \begin{notebox}[Kiểm chứng bằng mô hình]
-\sig{gemm_sram_model.py}: ánh xạ của bảng~\ref{tab:5-1} là song ánh với P = 4, 8; 240 cấu hình ngẫu nhiên (M, N, K, bank, NB = 1, 2) nạp A, B, BIAS qua cổng DMA rồi đọc qua cổng array/VPU, ghi C INT32 và INT8 qua cổng VPU rồi đọc qua cổng DMA: mọi giá trị khớp và không truy cập song song nào chạm hai lần một sub-bank.
+\sig{gemm_sram_model.py}: ánh xạ sub-bank và địa chỉ cục bộ là song ánh với P = 4, 8; 240 cấu hình ngẫu nhiên (M, N, K, bank, NB = 1, 2) nạp A, B, BIAS qua cổng DMA rồi đọc qua cổng array/VPU, ghi C INT32 và INT8 qua cổng VPU rồi đọc qua cổng DMA: mọi giá trị khớp và không truy cập song song nào chạm hai lần một sub-bank.
 \end{notebox}
 
 \end{document}

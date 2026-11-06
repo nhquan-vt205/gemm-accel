@@ -1,76 +1,83 @@
-% Mục 6 — Port top-level (đã khóa)
-\section{Port top-level}\label{sec:6}
+\subsection{Tín hiệu giao tiếp}\label{sec:6}
 
-\begin{keypoint}
-Port của \sig{gemm_accel_top} \textbf{đã khóa}: clock, reset, một cổng AXI4-Lite slave (17 tín hiệu) và một cổng AXI4-Full master (25 tín hiệu), tổng 44 port. Mọi thay đổi về sau, kể cả phần bổ sung ở mục~\ref{sec:7}, chỉ được thay đổi port nội bộ giữa các module, không được thêm, bớt hay đổi port ở bảng~\ref{tab:6-2} và bảng~\ref{tab:6-3}.
-\end{keypoint}
 
-\subsection{Tham số}\label{sec:6.1}
+Tín hiệu giao tiếp của \sig{gemm_accel_top} \textbf{đã khóa}: clock, reset, một cổng AXI4-Lite slave (17 tín hiệu) và một cổng AXI4-Full master (25 tín hiệu), tổng 44 port. Mọi thay đổi về sau, kể cả phần bổ sung ở mục~\ref{sec:7}, chỉ được thay đổi port nội bộ giữa các module, không được thêm, bớt hay đổi port ở hai bảng tín hiệu AXI ở trên.
 
-\begin{spectable}{L{0.27}L{0.15}L{0.58}}{Tham số của \sigc{gemm_accel_top}}{tab:6-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
-\sig{PE_ARRAY_SIZE} & 8 & P; chỉ nhận 4 hoặc 8 \\
-\sig{MAX_BURST_BEATS} & 16 & Số beat tối đa mỗi burst, 1 … 256 \\
-\sig{HAS_CHAIN} & 0 & 1 nếu hiện thực chế độ chuỗi descriptor (mục~\ref{sec:7.2}) \\
-\sig{HAS_PINGPONG} & 0 & 1 nếu hiện thực scratchpad ping-pong (mục~\ref{sec:7.3}); đòi hỏi \sig{HAS_CHAIN} = 1 \\
+
+\subsubsection{Tham số}\label{sec:6.1}
+
+\begin{spectable}{|L{0.27}|L{0.15}|L{0.58}|}{Tham số của \sigc{gemm_accel_top}}{tab:6-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
+\sig{PE_ARRAY_SIZE} & 8 & P; chỉ nhận 4 hoặc 8 \\\hline
+
+\sig{MAX_BURST_BEATS} & 16 & Số beat tối đa mỗi burst, 1 … 256 \\\hline
+
+\sig{HAS_CHAIN} & 0 & 1 nếu hiện thực chế độ chuỗi descriptor (mục~\ref{sec:7.2}) \\\hline
+
+\sig{HAS_PINGPONG} & 0 & 1 nếu hiện thực scratchpad ping-pong (mục~\ref{sec:7.3}); đòi hỏi \sig{HAS_CHAIN} = 1 \\\hline
+
 \end{spectable}
 
-\subsection{Danh sách port}\label{sec:6.2}
+\subsubsection{Danh sách tín hiệu}\label{sec:6.2}
 
-\begin{spectable}{L{0.06}L{0.24}L{0.08}L{0.08}L{0.54}}{Port clock, reset và AXI4-Lite slave (MMIO)}{tab:6-2}{\textbf{\#} & \textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-1 & \sig{clk} & 1 & In & Clock duy nhất của accelerator \\
-2 & \sig{rst_n} & 1 & In & Reset tích cực mức thấp, bất đồng bộ; được đồng bộ bên trong (RST-01) \\
-\midrule
-3 & \sig{s_axi_awaddr} & 32 & In & AW: địa chỉ ghi; chỉ giải mã bit [11:2] (AXL-05) \\
-4 & \sig{s_axi_awvalid} & 1 & In & AW: địa chỉ hợp lệ \\
-5 & \sig{s_axi_awready} & 1 & Out & AW: Register File nhận địa chỉ \\
-6 & \sig{s_axi_wdata} & 32 & In & W: dữ liệu ghi \\
-7 & \sig{s_axi_wstrb} & 4 & In & W: byte strobe (AXL-06) \\
-8 & \sig{s_axi_wvalid} & 1 & In & W: dữ liệu hợp lệ \\
-9 & \sig{s_axi_wready} & 1 & Out & W: Register File nhận dữ liệu \\
-10 & \sig{s_axi_bresp} & 2 & Out & B: luôn 2'b00 OKAY (AXL-04) \\
-11 & \sig{s_axi_bvalid} & 1 & Out & B: phản hồi hợp lệ \\
-12 & \sig{s_axi_bready} & 1 & In & B: CPU nhận phản hồi \\
-13 & \sig{s_axi_araddr} & 32 & In & AR: địa chỉ đọc; chỉ giải mã bit [11:2] \\
-14 & \sig{s_axi_arvalid} & 1 & In & AR: địa chỉ hợp lệ \\
-15 & \sig{s_axi_arready} & 1 & Out & AR: Register File nhận địa chỉ \\
-16 & \sig{s_axi_rdata} & 32 & Out & R: dữ liệu đọc \\
-17 & \sig{s_axi_rresp} & 2 & Out & R: luôn 2'b00 OKAY \\
-18 & \sig{s_axi_rvalid} & 1 & Out & R: dữ liệu hợp lệ \\
-19 & \sig{s_axi_rready} & 1 & In & R: CPU nhận dữ liệu \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Port clock, reset và AXI4-Lite slave (MMIO)}{tab:6-2}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}} \sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
+ \sig{rst_n} & 1 & Input & Reset ngoài tích cực mức thấp, kích hoạt bất đồng bộ.\newline Top dùng hai flip-flop đồng bộ cạnh nhả trước khi phân phối reset tới các module. \\\hline
+ \sig{s_axi_awaddr} & 32 & Input & Địa chỉ byte của thanh ghi cần ghi.\newline Chỉ giải mã bit [11:2]; bỏ qua bit [1:0].\newline Hợp lệ cùng AWVALID; giữ ổn định khi chờ bắt tay. \\\hline
+ \sig{s_axi_awvalid} & 1 & Input & Báo địa chỉ và thuộc tính yêu cầu ghi hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi AWREADY = 1. \\\hline
+ \sig{s_axi_awready} & 1 & Output & Báo bên nhận sẵn sàng nhận địa chỉ ghi.\newline Bắt tay xảy ra tại cạnh lên khi AWVALID và AWREADY cùng bằng 1. \\\hline
+ \sig{s_axi_wdata} & 32 & Input & Word 32 bit cần ghi.\newline Hợp lệ khi WVALID = 1; giữ nguyên trong lúc chờ WREADY. \\\hline
+ \sig{s_axi_wstrb} & 4 & Input & Cho phép ghi từng byte của thanh ghi RW.\newline Bit b = 1 cho phép ghi byte b; bit b = 0 giữ byte đó.\newline Các bit lệnh CTRL chỉ có hiệu lực khi bit 0 bằng 1. \\\hline
+ \sig{s_axi_wvalid} & 1 & Input & Báo dữ liệu ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi WREADY = 1. \\\hline
+ \sig{s_axi_wready} & 1 & Output & Báo bên nhận sẵn sàng nhận dữ liệu ghi.\newline Giao dịch được nhận tại cạnh lên khi WVALID và WREADY cùng bằng 1. \\\hline
+ \sig{s_axi_bresp} & 2 & Output & Mã phản hồi ghi.\newline Luôn bằng 2'b00 (OKAY), kể cả truy cập offset dự trữ.\newline Hợp lệ cùng BVALID. \\\hline
+ \sig{s_axi_bvalid} & 1 & Output & Báo phản hồi ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi BREADY = 1. \\\hline
+ \sig{s_axi_bready} & 1 & Input & Báo bên nhận sẵn sàng nhận phản hồi ghi.\newline Giao dịch được nhận tại cạnh lên khi BVALID và BREADY cùng bằng 1. \\\hline
+ \sig{s_axi_araddr} & 32 & Input & Địa chỉ byte của thanh ghi cần đọc.\newline Chỉ giải mã bit [11:2]; bỏ qua bit [1:0].\newline Hợp lệ cùng ARVALID; giữ ổn định khi chờ bắt tay. \\\hline
+ \sig{s_axi_arvalid} & 1 & Input & Báo địa chỉ và thuộc tính yêu cầu đọc hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi ARREADY = 1. \\\hline
+ \sig{s_axi_arready} & 1 & Output & Báo bên nhận sẵn sàng nhận địa chỉ đọc.\newline Bắt tay xảy ra tại cạnh lên khi ARVALID và ARREADY cùng bằng 1. \\\hline
+ \sig{s_axi_rdata} & 32 & Output & Word 32 bit đọc trả về.\newline Hợp lệ khi RVALID = 1; giữ nguyên trong lúc chờ RREADY. \\\hline
+ \sig{s_axi_rresp} & 2 & Output & Mã phản hồi đọc.\newline Luôn bằng 2'b00 (OKAY), kể cả truy cập offset dự trữ.\newline Hợp lệ cùng RVALID. \\\hline
+ \sig{s_axi_rvalid} & 1 & Output & Báo dữ liệu đọc hợp lệ.\newline Giữ valid và payload ổn định đến khi RREADY = 1. \\\hline
+ \sig{s_axi_rready} & 1 & Input & Báo bên nhận sẵn sàng nhận dữ liệu đọc.\newline Giao dịch được nhận tại cạnh lên khi RVALID và RREADY cùng bằng 1. \\\hline
+
 \end{spectable}
 
-\begin{spectable}{L{0.06}L{0.24}L{0.08}L{0.08}L{0.54}}{Port AXI4-Full master (DMA)}{tab:6-3}{\textbf{\#} & \textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Mô tả}}
-20 & \sig{m_axi_araddr} & 32 & Out & AR: địa chỉ byte đầu burst đọc \\
-21 & \sig{m_axi_arlen} & 8 & Out & AR: số beat − 1 \\
-22 & \sig{m_axi_arsize} & 3 & Out & AR: luôn 3'b010 \\
-23 & \sig{m_axi_arburst} & 2 & Out & AR: luôn 2'b01 (INCR) \\
-24 & \sig{m_axi_arvalid} & 1 & Out & AR: yêu cầu hợp lệ \\
-25 & \sig{m_axi_arready} & 1 & In & AR: bus nhận yêu cầu \\
-26 & \sig{m_axi_rdata} & 32 & In & R: dữ liệu một beat \\
-27 & \sig{m_axi_rresp} & 2 & In & R: mã phản hồi \\
-28 & \sig{m_axi_rlast} & 1 & In & R: beat cuối của burst \\
-29 & \sig{m_axi_rvalid} & 1 & In & R: dữ liệu hợp lệ \\
-30 & \sig{m_axi_rready} & 1 & Out & R: DMA nhận dữ liệu \\
-31 & \sig{m_axi_awaddr} & 32 & Out & AW: địa chỉ byte đầu burst ghi \\
-32 & \sig{m_axi_awlen} & 8 & Out & AW: số beat − 1 \\
-33 & \sig{m_axi_awsize} & 3 & Out & AW: luôn 3'b010 \\
-34 & \sig{m_axi_awburst} & 2 & Out & AW: luôn 2'b01 (INCR) \\
-35 & \sig{m_axi_awvalid} & 1 & Out & AW: yêu cầu hợp lệ \\
-36 & \sig{m_axi_awready} & 1 & In & AW: bus nhận yêu cầu \\
-37 & \sig{m_axi_wdata} & 32 & Out & W: dữ liệu một beat \\
-38 & \sig{m_axi_wstrb} & 4 & Out & W: luôn 4'b1111 \\
-39 & \sig{m_axi_wlast} & 1 & Out & W: beat cuối của burst \\
-40 & \sig{m_axi_wvalid} & 1 & Out & W: dữ liệu hợp lệ \\
-41 & \sig{m_axi_wready} & 1 & In & W: bus nhận dữ liệu \\
-42 & \sig{m_axi_bresp} & 2 & In & B: mã phản hồi ghi \\
-43 & \sig{m_axi_bvalid} & 1 & In & B: phản hồi hợp lệ \\
-44 & \sig{m_axi_bready} & 1 & Out & B: DMA nhận phản hồi \\
+\begin{spectable}{|L{0.26}|L{0.15}|L{0.14}|L{0.45}|}{Port AXI4-Full master (DMA)}{tab:6-3}{\textbf{Tên tín hiệu} & \textbf{Độ rộng} & \textbf{Hướng} & \textbf{Mô tả}} \sig{m_axi_araddr} & 32 & Output & Địa chỉ byte đầu tiên của burst đọc.\newline Địa chỉ căn 4 byte.\newline Hợp lệ cùng ARVALID; giữ ổn định khi chờ bắt tay. \\\hline
+ \sig{m_axi_arlen} & 8 & Output & Số beat của burst đọc trừ 1.\newline Hợp lệ cùng ARVALID; số beat thực tế từ 1 đến MAX\_BURST\_BEATS và không vượt biên 4 KiB. \\\hline
+ \sig{m_axi_arsize} & 3 & Output & Kích thước mỗi beat của burst đọc.\newline Luôn bằng 3'b010, tương ứng 4 byte. \\\hline
+ \sig{m_axi_arburst} & 2 & Output & Kiểu burst đọc.\newline Luôn bằng 2'b01 (INCR); địa chỉ tăng 4 byte sau mỗi beat. \\\hline
+ \sig{m_axi_arvalid} & 1 & Output & Báo địa chỉ và thuộc tính yêu cầu đọc hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi ARREADY = 1. \\\hline
+ \sig{m_axi_arready} & 1 & Input & Báo bên nhận sẵn sàng nhận địa chỉ đọc.\newline Bắt tay xảy ra tại cạnh lên khi ARVALID và ARREADY cùng bằng 1. \\\hline
+ \sig{m_axi_rdata} & 32 & Input & Word 32 bit đọc trả về.\newline Hợp lệ khi RVALID = 1; giữ nguyên trong lúc chờ RREADY. \\\hline
+ \sig{m_axi_rresp} & 2 & Input & Mã phản hồi beat đọc.\newline Chỉ OKAY là thành công; mọi giá trị khác làm lệnh kết thúc có lỗi.\newline Hợp lệ cùng RVALID. \\\hline
+ \sig{m_axi_rlast} & 1 & Input & Đánh dấu beat cuối burst đọc khi RVALID = 1.\newline DMA so sánh vị trí với ARLEN + 1; đến sớm hoặc muộn đều là lỗi. \\\hline
+ \sig{m_axi_rvalid} & 1 & Input & Báo dữ liệu đọc hợp lệ.\newline Giữ valid và payload ổn định đến khi RREADY = 1. \\\hline
+ \sig{m_axi_rready} & 1 & Output & Báo bên nhận sẵn sàng nhận dữ liệu đọc.\newline Giao dịch được nhận tại cạnh lên khi RVALID và RREADY cùng bằng 1. \\\hline
+ \sig{m_axi_awaddr} & 32 & Output & Địa chỉ byte đầu tiên của burst ghi.\newline Địa chỉ căn 4 byte.\newline Hợp lệ cùng AWVALID; giữ ổn định khi chờ bắt tay. \\\hline
+ \sig{m_axi_awlen} & 8 & Output & Số beat của burst ghi trừ 1.\newline Hợp lệ cùng AWVALID; số beat thực tế từ 1 đến MAX\_BURST\_BEATS và không vượt biên 4 KiB. \\\hline
+ \sig{m_axi_awsize} & 3 & Output & Kích thước mỗi beat của burst ghi.\newline Luôn bằng 3'b010, tương ứng 4 byte. \\\hline
+ \sig{m_axi_awburst} & 2 & Output & Kiểu burst ghi.\newline Luôn bằng 2'b01 (INCR); địa chỉ tăng 4 byte sau mỗi beat. \\\hline
+ \sig{m_axi_awvalid} & 1 & Output & Báo địa chỉ và thuộc tính yêu cầu ghi hợp lệ.\newline Giữ bằng 1 và giữ nguyên payload cho đến khi AWREADY = 1. \\\hline
+ \sig{m_axi_awready} & 1 & Input & Báo bên nhận sẵn sàng nhận địa chỉ ghi.\newline Bắt tay xảy ra tại cạnh lên khi AWVALID và AWREADY cùng bằng 1. \\\hline
+ \sig{m_axi_wdata} & 32 & Output & Word 32 bit cần ghi.\newline Hợp lệ khi WVALID = 1; giữ nguyên trong lúc chờ WREADY. \\\hline
+ \sig{m_axi_wstrb} & 4 & Output & Mặt nạ byte ghi.\newline Luôn bằng 4'b1111 vì DMA ghi nguyên word 32 bit. \\\hline
+ \sig{m_axi_wlast} & 1 & Output & Đánh dấu beat cuối burst ghi khi WVALID = 1.\newline Bằng 1 ở đúng beat thứ AWLEN + 1 và giữ nguyên trong lúc chờ WREADY. \\\hline
+ \sig{m_axi_wvalid} & 1 & Output & Báo dữ liệu ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi WREADY = 1. \\\hline
+ \sig{m_axi_wready} & 1 & Input & Báo bên nhận sẵn sàng nhận dữ liệu ghi.\newline Giao dịch được nhận tại cạnh lên khi WVALID và WREADY cùng bằng 1. \\\hline
+ \sig{m_axi_bresp} & 2 & Input & Mã phản hồi burst ghi.\newline Chỉ OKAY là thành công; mọi giá trị khác làm lệnh kết thúc có lỗi.\newline Hợp lệ cùng BVALID. \\\hline
+ \sig{m_axi_bvalid} & 1 & Input & Báo phản hồi ghi hợp lệ.\newline Giữ valid và payload ổn định đến khi BREADY = 1. \\\hline
+ \sig{m_axi_bready} & 1 & Output & Báo bên nhận sẵn sàng nhận phản hồi ghi.\newline Giao dịch được nhận tại cạnh lên khi BVALID và BREADY cùng bằng 1.\newline DMA luôn giữ BREADY = 1. \\\hline
+
 \end{spectable}
 
-\begin{reqtable}{Port top-level}{tab:6-4}
-TOP-01 & Port của \sig{gemm_accel_top} đúng tên, độ rộng và chiều như bảng~\ref{tab:6-2} và bảng~\ref{tab:6-3}; không có port nào khác, kể cả ngắt \\
-TOP-02 & Danh sách port này cố định cho mọi giá trị tham số ở bảng~\ref{tab:6-1} \\
-TOP-03 & Giá trị tham số ngoài miền cho phép phải bị chặn lúc elaboration \\
-TOP-04 & Kênh đọc AXI (AR, R) và kênh ghi (AW, W, B) do DMA điều khiển; không có đường tổ hợp từ input tới output trên cùng một cổng AXI \\
-TOP-05 & \sig{gemm_accel_top} là Chisel BlackBox, nối hệ thống qua cầu TLToAXI4 (MMIO) và AXI4ToTL (DMA). Tín hiệu AXI phụ (ID, LOCK, CACHE, PROT, QOS) do \sig{GemmWrapper.scala} cấp \\
-\end{reqtable}
+
+\paragraph{Port top-level}\label{tab:6-4}
+\begin{itemize}
+\item Tín hiệu giao tiếp của \sig{gemm_accel_top} đúng tên, độ rộng và chiều như hai bảng tín hiệu AXI ở trên; không có port nào khác, kể cả ngắt
+\item Danh sách port này cố định cho mọi giá trị tham số đã liệt kê ở trên
+\item Giá trị tham số ngoài miền cho phép phải bị chặn lúc elaboration
+\item Kênh đọc AXI (AR, R) và kênh ghi (AW, W, B) do DMA điều khiển; không có đường tổ hợp từ input tới output trên cùng một cổng AXI
+\item \sig{gemm_accel_top} là Chisel BlackBox, nối hệ thống qua cầu TLToAXI4 (MMIO) và AXI4ToTL (DMA). Tín hiệu AXI phụ (ID, LOCK, CACHE, PROT, QOS) do \sig{GemmWrapper.scala} cấp
+\end{itemize}
+
+
+% Mục 3 — Đặc tả thanh ghi
