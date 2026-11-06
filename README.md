@@ -52,7 +52,48 @@ make synth     TOP=gemm_vpu GENERICS="P=4"      # Vivado: báo cáo ở syn/out/
 make schematic TOP=gemm_systolic_array          # Vivado GUI: schematic RTL
 ```
 
-Công cụ: **QuestaSim** (mô phỏng), **Vivado** (synth, schematic), **Python 3** (mô hình, sinh testcase), Verilator 5 (chỉ để lint và CI), XeLaTeX (build lại spec).
+Công cụ: **QuestaSim** (mô phỏng), **Vivado** (synth, schematic), **Python 3** (mô hình, sinh testcase), Verilator 5.020 (lint, mô phỏng với `SIM=verilator`, CI), XeLaTeX (build lại spec).
+
+## Phiên bản công cụ đề xuất cho nhóm
+
+Các phiên bản đề xuất dưới đây dựa trên máy hiện tại (kiểm tra ngày **06/11/2026**), không phải yêu cầu tất cả công cụ phải giống chính xác từng phiên bản. NumPy và GTKWave chưa cài trên máy; phiên bản đề xuất là bản có trong kho Ubuntu 24.04.
+
+| Công cụ | Phiên bản đề xuất | Mức cần thiết / yêu cầu thống nhất |
+|---|---|---|
+| Hệ điều hành | Ubuntu **24.04 LTS**, x86-64 | Môi trường đề xuất, không bắt buộc; Windows có thể dùng Ubuntu 24.04 trong WSL2. Không cần cùng point release. |
+| Verilator | **5.020**, gói Ubuntu `5.020-1` | Cả ba cần cho lint/mô phỏng chung; nên dùng **cùng phiên bản** để đối chiếu kết quả. |
+| GCC / G++ | **13.3.0** | Bắt buộc để build executable Verilator; cần hỗ trợ C++ coroutine cho `--timing`, không bắt buộc cùng phiên bản chính xác. |
+| GNU Make | **4.3** | Bắt buộc cho build và regression; không bắt buộc cùng phiên bản chính xác. |
+| Python | **3.12.3** | Cần cho model, generator và regression; nên cùng dòng **3.12.x**. |
+| NumPy | **1.26.4** | Cần khi chạy model systolic array; nên cùng phiên bản nếu dùng để sinh random testcase. |
+| GTKWave | **3.3.116** | Tùy chọn, dùng xem waveform FST/VCD; không bắt buộc cùng phiên bản. |
+
+Ưu tiên thống nhất Verilator và môi trường sinh dữ liệu Python/NumPy. Các phiên bản compiler và Make là mốc tham chiếu; vẫn cập nhật bản vá hệ điều hành bình thường. Bộ đề xuất chưa phải xác nhận toàn bộ chức năng vì repo chưa có đầy đủ RTL/TB.
+
+Verilator 5.020 đã thử với flow `--binary --timing --assert` của project. Nếu cần tính năng hoặc sửa lỗi ở phiên bản mới, cả nhóm thống nhất nâng và chạy lại lint/regression; không tự đổi một máy sang `latest`/`master`. Các bản mới hỗ trợ SV rộng hơn, nên hạn chế của 5.020 không đại diện cho mọi bản Verilator.
+
+### Cài và kiểm tra môi trường
+
+Trên Ubuntu 24.04 hoặc Ubuntu 24.04 trong WSL2:
+
+```bash
+sudo apt update
+sudo apt install verilator=5.020-1 gcc-13 g++-13 make python3 python3-numpy
+# Tùy chọn nếu cần xem waveform
+sudo apt install gtkwave
+
+verilator --version
+g++ -dumpfullversion
+make --version | head -1
+python3 --version
+python3 -c 'import numpy; print(numpy.__version__)'
+# Chỉ kiểm tra khi đã cài GTKWave
+gtkwave --version
+```
+
+Nếu máy có nhiều compiler, kiểm tra `g++` mặc định có tương thích flow Verilator. Các lệnh apt ngoài Verilator lấy bản candidate trong kho Ubuntu, không khóa chính xác mọi phiên bản. Không cần cài NumPy bằng pip nếu đã dùng `python3-numpy`; khi dùng venv riêng và cần tái hiện dữ liệu, cài `numpy==1.26.4` trong venv đó.
+
+CI hiện dùng Ubuntu 24.04 và cài Verilator bằng apt nhưng chưa pin phiên bản trong workflow. Trước khi đổi compiler/Verilator, chạy lại `make lint` và các regression đã có. Lưu phiên bản tool, data seed và simulation seed khi báo lỗi.
 
 ## Quy ước
 
