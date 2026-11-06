@@ -1,0 +1,3 @@
+# Danh sách regress "smoke" — mỗi dòng: <TB> <TC> [BIẾN=giá_trị ...]
+# chạy trên CI mỗi Pull Request: giữ ngắn (vài phút)
+# ví dụ: tb_gemm_vpu unit/vpu/basic

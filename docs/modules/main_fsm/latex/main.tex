@@ -1,0 +1,424 @@
+% !TEX program = xelatex
+% Spec module gemm_main_fsm v1.0 (full option)
+\documentclass[10pt,a4paper]{article}
+\newcommand{\ModHeader}{gemm\_main\_fsm}
+\input{preamble}
+
+\begin{document}
+\makecover{gemm\_main\_fsm}{Main FSM và bộ lập lịch descriptor}{Port list, job, ba engine Đọc/Tính/Ghi, chọn bank, lỗi, soft reset}{%
+\textbf{Module} & \sig{gemm_main_fsm} (instance \sig{u_main_fsm} trong \sig{gemm_accel_top}) \\
+\textbf{Module con} & \sig{gemm_fsm_ctrl}, \sig{gemm_job_check}, \sig{gemm_rd_engine}, \sig{gemm_cp_engine}, \sig{gemm_wr_engine}, \sig{gemm_bank_sb} \\
+\textbf{Cấu hình} & Đặc tả bản đầy đủ: \sig{HAS_CHAIN} = 1, \sig{HAS_PINGPONG} = 1. Với tham số bằng 0, cùng RTL rút về hành vi của mục 1 – 6 spec hệ thống (mục~\ref{sec:2}) \\
+\textbf{Tuân theo} & Spec hệ thống v1.0: mục 3 (TSK-*, REG-11, REG-12, bảng mã lỗi), mục 4 (pha, lỗi, RST-01 … RST-09), mục 5.2 (FSM-01 … FSM-06), mục 7 (BS-*, DSC-01 … DSC-11, PP-01 … PP-10) \\
+\textbf{Kèm theo} & \sig{gemm_sched_model.py}: mô hình cycle-accurate của bộ lập lịch, có dữ liệu thật; kiểm kết quả DRAM so với thực thi tuần tự, thứ tự pha, chọn bank, lỗi \\}
+
+% ===================== 1 =====================
+\section{Chức năng}\label{sec:1}
+
+\begin{keypoint}
+Main FSM là module duy nhất ra lệnh cho DMA và array. Mỗi phép GEMM được biểu diễn bằng một \textbf{job} (lấy từ bản chụp thanh ghi ở chế độ đơn, hoặc từ một descriptor ở chế độ chuỗi). Ba engine độc lập đưa job qua các pha: \textbf{Đọc} (FETCH, kiểm tra, LOAD\_*), \textbf{Tính} (COMPUTE) và \textbf{Ghi} (STORE\_C). Bộ chấm điểm bank quyết định khi nào một pha được bắt đầu, nên khi có ping-pong ba pha của ba job liên tiếp chạy chồng nhau mà không bao giờ đụng cùng một bank.
+\end{keypoint}
+
+\begin{reqtable}{Chức năng}{tab:1-1}
+FSM-F01 & Chế độ đơn (START): một job, các pha CHECK\_CFG → LOAD\_BIAS (nếu \sig{POST_EN}) → LOAD\_A → LOAD\_B → COMPUTE → STORE\_C, tuần tự, đúng mục 4 spec hệ thống (BS-03) \\
+FSM-F02 & Chế độ chuỗi (START\_CHAIN): mỗi descriptor là một job, chạy FETCH → kiểm tra → LOAD\_BIAS → LOAD\_A → LOAD\_B (trừ khi \sig{REUSE_B}) → COMPUTE → STORE\_C (DSC-02); chuỗi dừng ở descriptor có \sig{LAST} = 1 \\
+FSM-F03 & Với \sig{HAS_PINGPONG} = 1, các pha của các job khác nhau chạy chồng theo PP-01 … PP-08. Với \sig{HAS_PINGPONG} = 0, mọi pha dùng bus hoặc scratchpad loại trừ nhau (hình 7-2a spec hệ thống) \\
+FSM-F04 & Nội dung DRAM sau một tác vụ DONE giống hệt thực thi tuần tự từng job, với mọi cấu hình tham số và mọi thời gian trả lời của bus (PP-08, FUN-07) \\
+FSM-F05 & FSM báo kết thúc tác vụ cho Register File bằng đúng một xung done hoặc một xung error; điều phối soft reset; cấp bộ đếm \sig{DESC_DONE_CNT}, thanh ghi \sig{ERR_DESC_ADDR} và tín hiệu đếm hiệu năng \\
+FSM-F06 & FSM cấp cấu hình của job đang tính cho array và VPU, và bank đang tính cho scratchpad. Bản chụp của Register File chỉ đi tới FSM \\
+\end{reqtable}
+
+\begin{notebox}[Thay đổi port nội bộ so với bảng 5-0 của spec hệ thống]
+Theo BS-04: (1) bản chụp cấu hình chỉ đi tới FSM; array và VPU nhận cấu hình của job đang tính từ FSM (\sig{o_comp_*}); (2) DMA có hai kênh với lệnh mang đủ tham số (địa chỉ, số hàng, số word mỗi hàng, stride, bank) thay vì tự đọc bản chụp; (3) scratchpad nhận bit chọn bank. Các cam kết hành vi của mục 5 spec hệ thống không đổi.
+\end{notebox}
+
+% ===================== 2 =====================
+\section{Tham số}\label{sec:2}
+\begin{spectable}{L{0.2}L{0.14}L{0.66}}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
+\sig{P} & 8 & Kích thước array; 4 hoặc 8. Chỉ dùng cho \sig{HW_CONFIG} và assertion \\
+\sig{HAS_CHAIN} & 1 & 1: có chế độ chuỗi. 0: START\_CHAIN kết thúc với mã lỗi 5 (REG-04); engine Đọc không có FETCH \\
+\sig{HAS_PINGPONG} & 1 & 1: hai bank mỗi buffer, các pha chạy chồng. Đòi hỏi \sig{HAS_CHAIN} = 1 \\
+\sig{NB} & 2 & localparam = \sig{HAS_PINGPONG} ? 2 : 1, số bank mỗi buffer \\
+\end{spectable}
+
+\begin{spectable}{L{0.4}L{0.6}}{Hành vi theo cấu hình}{tab:2-2}{\textbf{Cấu hình} & \textbf{Hành vi}}
+\sig{HAS_CHAIN} = 0, \sig{HAS_PINGPONG} = 0 & Bản cơ bản của mục 1 – 6. Mọi job có bank 0; chỉ một job mỗi tác vụ \\
+\sig{HAS_CHAIN} = 1, \sig{HAS_PINGPONG} = 0 & Chuỗi descriptor, các pha tuần tự tuyệt đối (quy tắc SEQ, mục~\ref{sec:6.3}) \\
+\sig{HAS_CHAIN} = 1, \sig{HAS_PINGPONG} = 1 & Bản đầy đủ: chuỗi descriptor, ping-pong \\
+\sig{HAS_CHAIN} = 0, \sig{HAS_PINGPONG} = 1 & Không hợp lệ: chặn lúc elaboration \\
+\end{spectable}
+
+% ===================== 3 =====================
+\section{Port list}\label{sec:3}
+
+\begin{spectable}{L{0.23}L{0.09}L{0.08}L{0.11}L{0.49}}{Port của \sigc{gemm_main_fsm}}{tab:3-1}{\textbf{Port} & \textbf{Rộng} & \textbf{Chiều} & \textbf{Nối với} & \textbf{Mô tả}}
+\multicolumn{5}{@{}l}{\textit{Clock, reset, soft reset}} \\
+\sig{clk}, \sig{rst_n} & 1, 1 & In & top & Clock; reset đã đồng bộ (\sig{rst_n_sync}) \\
+\sig{o_soft_clr} & 1 & Out & mọi module & Xung xóa đồng bộ 1 chu kỳ (RST-03) \\
+\sig{o_soft_busy} & 1 & Out & RF & Đang trong chuỗi soft reset (RST-07) \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{Register File → FSM}} \\
+\sig{i_start_pulse} & 1 & In & RF & Một tác vụ vừa được chấp nhận \\
+\sig{i_start_kind} & 2 & In & RF & Bit 0: START, bit 1: START\_CHAIN đã được ghi 1 \\
+\sig{i_soft_req} & 1 & In & RF & Yêu cầu soft reset (xung) \\
+\sig{i_cfg_dim} … \sig{i_cfg_qshift} & 8 × 32 & In & RF & Bản chụp: \sig{MATRIX_DIM}, \sig{BASE_ADDR_IN/WEIGHT/OUT}, \sig{POST_CTRL}, \sig{BIAS_ADDR}, \sig{QUANT_M0}, \sig{QUANT_SHIFT} (đủ 32 bit) \\
+\sig{i_cfg_desc_ptr} & 32 & In & RF & Bản chụp \sig{DESC_PTR} \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{FSM → Register File}} \\
+\sig{o_done_pulse} & 1 & Out & RF & Tác vụ kết thúc thành công \\
+\sig{o_err_pulse}, \sig{o_err_code} & 1, 4 & Out & RF & Tác vụ kết thúc với lỗi, mã lỗi \\
+\sig{o_perf_load}, \sig{o_perf_comp}, \sig{o_perf_store} & 1 × 3 & Out & RF & Mức: đang chạy LOAD\_*, COMPUTE, STORE\_C \\
+\sig{o_err_desc_addr} & 32 & Out & RF & \sig{ERR_DESC_ADDR} \\
+\sig{o_desc_done_cnt} & 32 & Out & RF & \sig{DESC_DONE_CNT} \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{Lệnh kênh đọc DMA}} \\
+\sig{o_rd_start} & 1 & Out & DMA & Xung: bắt đầu lệnh; các port \sig{o_rd_*} khác hợp lệ ở chu kỳ này \\
+\sig{o_rd_dst} & 2 & Out & DMA & 0: A, 1: B, 2: BIAS, 3: descriptor (FETCH) \\
+\sig{o_rd_base} & 32 & Out & DMA & Địa chỉ byte của hàng đầu \\
+\sig{o_rd_rows}, \sig{o_rd_rwords} & 6, 6 & Out & DMA & Số hàng 1 … 32; số word mỗi hàng 1 … 32 \\
+\sig{o_rd_stride} & 16 & Out & DMA & Khoảng cách byte giữa hai hàng (≥ 4 · \sig{rwords}) \\
+\sig{o_rd_bank} & 1 & Out & DMA & Bank đích \\
+\sig{o_rd_abort} & 1 & Out & DMA & Mức: yêu cầu abort (DMA-10) \\
+\sig{i_rd_busy}, \sig{i_rd_done}, \sig{i_rd_error} & 1 × 3 & In & DMA & Kênh bận; xung xong; xung lỗi \\
+\sig{i_desc_valid}, \sig{i_desc_idx}, \sig{i_desc_data} & 1, 4, 32 & In & DMA & Một word descriptor vừa đọc về \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{Lệnh kênh ghi DMA}} \\
+\sig{o_wr_start} & 1 & Out & DMA & Xung: bắt đầu STORE\_C \\
+\sig{o_wr_fmt} & 1 & Out & DMA & 0: INT32, 1: INT8 \\
+\sig{o_wr_base}, \sig{o_wr_rows}, \sig{o_wr_rwords}, \sig{o_wr_stride}, \sig{o_wr_bank} & 32, 6, 6, 16, 1 & Out & DMA & Như kênh đọc \\
+\sig{o_wr_abort} & 1 & Out & DMA & Mức: yêu cầu abort \\
+\sig{i_wr_busy}, \sig{i_wr_done}, \sig{i_wr_error} & 1 × 3 & In & DMA & Như kênh đọc \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{Array, VPU và scratchpad phía tính}} \\
+\sig{o_pe_start} & 1 & Out & Array & Xung bắt đầu COMPUTE \\
+\sig{i_pe_done}, \sig{i_pe_busy} & 1, 1 & In & Array & Xung xong (đã qua VPU vào buffer C); mức bận \\
+\sig{o_comp_dim} & 32 & Out & Array & \{8'b0, K, N, M\} của job đang tính (bố cục \sig{MATRIX_DIM}) \\
+\sig{o_comp_post_en}, \sig{o_comp_relu_en} & 1, 1 & Out & VPU & \\
+\sig{o_comp_qm0}, \sig{o_comp_qshift} & 32, 5 & Out & VPU & \\
+\sig{o_comp_bank_a}, \sig{_b}, \sig{_bias}, \sig{_c} & 1 × 4 & Out & SRAM & Bank mà array/VPU đang dùng \\
+\sig{o_comp_active} & 1 & Out & SRAM & Mức: COMPUTE đang chạy (cho assertion) \\
+\end{spectable}
+
+\begin{reqtable}{Giao tiếp}{tab:3-2}
+FSM-I01 & Mọi port \sig{o_*} lấy từ thanh ghi, trừ \sig{o_rd_abort} và \sig{o_wr_abort} (mức, cũng từ thanh ghi trạng thái) \\
+FSM-I02 & Lệnh DMA: FSM chỉ bật \sig{o_rd_start} khi kênh đọc rảnh (\sig{i_rd_busy} = 0 và không có lệnh nào đang chờ \sig{i_rd_done}/\sig{i_rd_error}); tương tự kênh ghi. Các port tham số chỉ cần hợp lệ ở chu kỳ \sig{o_*_start} = 1; DMA tự chốt \\
+FSM-I03 & \sig{o_comp_dim}, \sig{o_comp_post_en}, \sig{o_comp_relu_en}, \sig{o_comp_qm0}, \sig{o_comp_qshift}, \sig{o_comp_bank_*} hợp lệ từ chu kỳ \sig{o_pe_start} = 1 tới hết chu kỳ \sig{i_pe_done} = 1 và không đổi trong khoảng đó (SA-06, VPU-I05) \\
+FSM-I04 & \sig{o_pe_start} chỉ khi \sig{i_pe_busy} = 0. Mỗi \sig{o_pe_start} có đúng một \sig{i_pe_done} (SA-07) \\
+FSM-I05 & \sig{o_done_pulse} và \sig{o_err_pulse} không bao giờ cùng chu kỳ; mỗi \sig{i_start_pulse} có tối đa một trong hai; không có cái nào cho tác vụ bị soft reset hủy (FSM-04, RST-08) \\
+\end{reqtable}
+
+% ===================== 4 =====================
+\section{Vi kiến trúc}\label{sec:4}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,scale=0.8,transform shape]
+\draw[brand,line width=1pt,rounded corners=3pt,fill=cream] (0,0) rectangle (17.4,8.6);
+\node[anchor=north west,font=\headfont\bfseries\small,text=brand] at (0.1,8.55) {gemm\_main\_fsm};
+\node[blk,minimum width=15.6cm,minimum height=1.15cm] (ctl) at (8.7,7.35) {\textbf{gemm\_fsm\_ctrl}\\[-1pt]\scriptsize trạng thái tác vụ IDLE/RUN/SOFT/CLR · lỗi nhỏ nhất · chặn · cấp quyền bắt đầu pha (PP / SEQ) · done/err · soft\_clr};
+\node[blk,minimum width=4.3cm,minimum height=2.7cm] (rd) at (3.0,4.35) {\textbf{gemm\_rd\_engine}\\[-1pt]\scriptsize FETCH · CHECK · WAIT\_PREV\\[-2pt]\scriptsize LOAD\_BIAS · LOAD\_A · LOAD\_B\\[-2pt]\scriptsize bộ đệm descriptor\\[2pt]\scriptsize\itshape gemm\_job\_check};
+\node[blkd,minimum width=1.6cm,minimum height=1.1cm,font=\scriptsize] (slot) at (6.35,4.35) {slot\\[-2pt]“đã nạp”\\[-2pt]1 job};
+\node[blk,minimum width=3.4cm,minimum height=2.7cm] (cp) at (9.65,4.35) {\textbf{gemm\_cp\_engine}\\[-1pt]\scriptsize IDLE · RUN · HAND\\[-2pt]\scriptsize o\_pe\_start, o\_comp\_*};
+\node[blk,minimum width=3.4cm,minimum height=2.7cm] (wr) at (14.6,4.35) {\textbf{gemm\_wr\_engine}\\[-1pt]\scriptsize IDLE · RUN\\[-2pt]\scriptsize STORE\_C, DESC\_DONE\_CNT};
+\node[blkn,minimum width=15.6cm,minimum height=1.0cm] (sb) at (8.7,1.35) {\textbf{gemm\_bank\_sb}\\[-1pt]\scriptsize con trỏ bank kế tiếp · rcnt[A|B|BIAS][bank] · wcnt[C][bank]};
+\draw[dat] (rd.east) -- (slot.west); \draw[dat] (slot.east) -- (cp.west); \draw[dat] (cp.east) -- node[lbl,above,text=data]{job} (wr.west);
+\foreach \x in {3.0,9.65,14.6}{\draw[ctl,<->] (\x,6.78) -- (\x,5.7); \draw[ctl,<->] (\x,3.0) -- (\x,1.85);}
+\node[lbl,right] at (3.05,6.25) {want / go, chặn};
+\node[lbl,right] at (3.05,2.45) {gán bank, tăng/giảm, rảnh?};
+\draw[ctl] (-0.6,7.35) node[left,font=\scriptsize,align=right]{RF\\start, soft} -- (ctl.west);
+\draw[ctl] (ctl.east) -- ++(0.6,0) node[right,font=\scriptsize,align=left]{RF\\done/err\\soft\_clr};
+\draw[ctl] (rd.south west)+(0.4,0) -- ++(0.4,-0.9) node[below,font=\scriptsize]{};
+\draw[ctl,<->] (1.2,3.0) -- (1.2,-0.5) node[below,font=\scriptsize]{DMA kênh đọc};
+\draw[ctl,<->] (9.0,3.0) -- (9.0,1.9);
+\draw[ctl,<->] (16.0,3.0) -- (16.0,-0.5) node[below,font=\scriptsize]{DMA kênh ghi};
+\draw[ctl,<->] (10.6,3.0) -- (10.6,-0.5) node[below,font=\scriptsize]{array · VPU · SRAM};
+\end{tikzpicture}
+\caption{Cấu trúc bên trong \sigc{gemm_main_fsm}}\label{fig:4-1}
+\end{figure}
+
+\Needspace{12\baselineskip}
+\begin{spectable}{L{0.2}L{0.17}L{0.63}}{Module con}{tab:4-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
+\sig{gemm_fsm_ctrl} & \sig{u_ctrl} & Trạng thái tác vụ; xử lý \sig{i_start_kind}; bản ghi lỗi; tín hiệu chặn; cấp quyền bắt đầu pha; done/error; soft reset; \sig{ERR_DESC_ADDR} \\
+\sig{gemm_job_check} & \sig{u_chk} (trong engine Đọc) & Tổ hợp: dựng job từ bản chụp hoặc descriptor; kiểm REG-12 hoặc DSC-03; tính stride hiệu dụng \\
+\sig{gemm_rd_engine} & \sig{u_rd} & Engine Đọc: FETCH, CHECK, chờ WAIT\_PREV, LOAD\_*, đẩy job vào slot \\
+\sig{gemm_cp_engine} & \sig{u_cp} & Engine Tính: lấy job từ slot, chạy COMPUTE, giữ job tới khi engine Ghi nhận \\
+\sig{gemm_wr_engine} & \sig{u_wr} & Engine Ghi: STORE\_C; \sig{DESC_DONE_CNT}; báo job cuối \\
+\sig{gemm_bank_sb} & \sig{u_sb} & Chọn bank theo bảng 7-4; bộ đếm chiếm dụng bank \\
+\end{spectable}
+
+\subsection{Job}\label{sec:4.1}
+
+Một job là struct \sig{gemm_pkg::job_t}. Engine Đọc giữ một job, slot giữ một job, engine Tính và engine Ghi mỗi bên giữ một job; tối đa bốn job cùng tồn tại.
+
+\begin{spectable}{L{0.18}L{0.08}L{0.74}}{Trường của \sigc{job_t}}{tab:4-2}{\textbf{Trường} & \textbf{Rộng} & \textbf{Nội dung}}
+\sig{idx} & 32 & Số thứ tự trong chuỗi, 0, 1, 2, …; luôn 0 ở chế độ đơn \\
+\sig{daddr} & 32 & Địa chỉ descriptor (cho \sig{ERR_DESC_ADDR}); 0 ở chế độ đơn \\
+\sig{m}, \sig{n}, \sig{k} & 6 × 3 & M, N, K (1 … 32) \\
+\sig{a}, \sig{b}, \sig{c}, \sig{bias} & 32 × 4 & Địa chỉ byte của A, B, C/Y, bias \\
+\sig{lda}, \sig{ldb}, \sig{ldc} & 16 × 3 & Stride hiệu dụng (byte), đã thay 0 bằng độ dài hàng \\
+\sig{qm0}, \sig{qsh} & 32, 5 & $M_0$, $sh$ \\
+\sig{post}, \sig{relu}, \sig{reuse}, \sig{waitp}, \sig{last} & 1 × 5 & Cờ \\
+\sig{next} & 32 & \sig{NEXT_PTR} (chỉ engine Đọc dùng) \\
+\sig{ba}, \sig{bb}, \sig{bbias}, \sig{bc} & 1 × 4 & Bank của A, B, BIAS, C (gán ở CHECK) \\
+\end{spectable}
+
+% ===================== 5 =====================
+\section{Dựng và kiểm tra job}\label{sec:5}
+
+\subsection{Chế độ đơn}
+\begin{spectable}{L{0.24}L{0.76}}{Job từ bản chụp (\sigc{gemm_job_check}, mode = đơn)}{tab:5-1}{\textbf{Trường} & \textbf{Giá trị}}
+\sig{m}, \sig{n}, \sig{k} & \sig{i_cfg_dim[7:0]}, \sig{[15:8]}, \sig{[23:16]} (6 bit thấp) \\
+\sig{a}, \sig{b}, \sig{c}, \sig{bias} & \sig{i_cfg_a_addr}, \sig{i_cfg_b_addr}, \sig{i_cfg_c_addr}, \sig{i_cfg_bias_addr} \\
+\sig{lda}, \sig{ldb}, \sig{ldc} & K; N; N nếu \sig{post}, ngược lại 4N \\
+\sig{post}, \sig{relu} & \sig{i_cfg_post_ctrl[0]}, \sig{[1]} \\
+\sig{qm0}, \sig{qsh} & \sig{i_cfg_qm0}, \sig{i_cfg_qshift[4:0]} \\
+\sig{idx}, \sig{daddr}, \sig{reuse}, \sig{waitp}, \sig{last} & 0, 0, 0, 0, 1 \\
+\end{spectable}
+Job hợp lệ khi và chỉ khi thỏa REG-12 của spec hệ thống (kiểm trên đủ 32 bit của bản chụp).
+
+\subsection{Chế độ chuỗi}
+Engine Đọc nhận 16 word descriptor qua \sig{i_desc_*} và lưu word 0 … 10 vào bộ đệm. Word 11 (\sig{TAG}) được bỏ qua; word 12 … 15 chỉ cần OR dồn để kiểm bằng 0.
+
+\begin{spectable}{L{0.24}L{0.76}}{Job từ descriptor}{tab:5-2}{\textbf{Trường} & \textbf{Giá trị (w$n$ = word thứ $n$)}}
+\sig{m}, \sig{n}, \sig{k} & w0[7:0], w0[15:8], w0[23:16] \\
+\sig{a}, \sig{b}, \sig{c} & w1, w2, w3 \\
+\sig{lda}, \sig{ldb} & w4[15:0], w4[31:16]; 0 → K, N \\
+\sig{ldc} & w5[15:0]; 0 → N nếu \sig{post}, ngược lại 4N \\
+\sig{last}, \sig{waitp}, \sig{reuse}, \sig{post}, \sig{relu} & w6[0], w6[1], w6[2], w6[3], w6[4] \\
+\sig{next}, \sig{bias}, \sig{qm0}, \sig{qsh} & w7, w8, w9, w10[4:0] \\
+\sig{idx}, \sig{daddr} & Bộ đếm descriptor của engine Đọc; con trỏ dùng để FETCH \\
+\end{spectable}
+
+\begin{reqtable}{Kiểm tra descriptor (\sigc{gemm_job_check}, mode = chuỗi)}{tab:5-3}
+CHK-01 & Hợp lệ khi và chỉ khi mọi điều sau đúng (DSC-03): $1 ≤ M ≤ 32$; N, K ∈ \{4, 8, …, 32\}; w0[31:24] = 0; w5[31:16] = 0; w6[31:5] = 0; w10[31:5] = 0; w12 … w15 = 0 \\
+CHK-02 & \sig{a}[1:0] = 0 và \sig{c}[1:0] = 0; \sig{b}[1:0] = 0 nếu \sig{reuse} = 0; \sig{bias}[1:0] = 0 nếu \sig{post} = 1 \\
+CHK-03 & Mỗi stride thô (w4[15:0], w4[31:16], w5[15:0]) bằng 0, hoặc là bội của 4 và không nhỏ hơn độ dài hàng: K cho A; N cho B; 4N cho C khi \sig{post} = 0, N khi \sig{post} = 1 \\
+CHK-04 & \sig{relu} = 1 kéo theo \sig{post} = 1 \\
+CHK-05 & \sig{reuse} = 1 chỉ khi \sig{idx} > 0 và (K, N) bằng (K, N) của job trước trong chuỗi (thanh ghi \sig{prev_kn} của engine Đọc) \\
+CHK-06 & \sig{last} = 0 kéo theo \sig{next}[5:0] = 0 (DSC-01). Vi phạm được tính là lỗi của chính descriptor này \\
+CHK-07 & \sig{DESC_PTR}[5:0] ≠ 0 được kiểm ở \sig{gemm_fsm_ctrl} khi bắt đầu chuỗi: lỗi mã 1 với f = 0, \sig{ERR_DESC_ADDR} = \sig{DESC_PTR}, không truy cập bus \\
+\end{reqtable}
+
+% ===================== 6 =====================
+\section{Bank và cấp quyền bắt đầu pha}\label{sec:6}
+
+\subsection{Chọn bank}\label{sec:6.1}
+\begin{reqtable}{\sigc{gemm_bank_sb}: chọn bank (bảng 7-4 spec hệ thống)}{tab:6-1}
+BNK-01 & Thanh ghi con trỏ \sig{nxt_a}, \sig{nxt_c}, \sig{nxt_bias}, \sig{nxt_b}, \sig{prev_b}: về 0 khi chấp nhận tác vụ, khi \sig{rst_n} và khi \sig{soft_clr} \\
+BNK-02 & Ở chu kỳ CHECK của job hợp lệ: \sig{ba = nxt_a}, \sig{bc = nxt_c}; \sig{bbias = nxt_bias} nếu \sig{post} (ngược lại 0); \sig{bb = prev_b} nếu \sig{reuse}, ngược lại \sig{bb = nxt_b} và \sig{prev_b <= nxt_b} \\
+BNK-03 & Với NB = 2, cùng cạnh clock đó đảo \sig{nxt_a}, \sig{nxt_c}; đảo \sig{nxt_bias} nếu \sig{post}; đảo \sig{nxt_b} nếu \sig{reuse} = 0. Với NB = 1 mọi bank là 0 \\
+\end{reqtable}
+
+\subsection{Bộ đếm chiếm dụng}\label{sec:6.2}
+\begin{spectable}{L{0.17}L{0.12}L{0.36}L{0.35}}{Bộ đếm của \sigc{gemm_bank_sb}}{tab:6-2}{\textbf{Bộ đếm} & \textbf{Rộng} & \textbf{Tăng khi} & \textbf{Giảm khi}}
+\sig{rcnt[A][b]} & 2 & Engine Đọc bắt đầu LOAD\_A vào bank b & COMPUTE của job có \sig{ba} = b xong \\
+\sig{rcnt[B][b]} & 2 & LOAD\_B vào bank b, hoặc job \sig{reuse} = 1 có \sig{bb} = b đi qua bước B & COMPUTE của job có \sig{bb} = b xong \\
+\sig{rcnt[BIAS][b]} & 2 & LOAD\_BIAS vào bank b & COMPUTE của job \sig{post} = 1 có \sig{bbias} = b xong \\
+\sig{wcnt[C][b]} & 1 & COMPUTE của job có \sig{bc} = b bắt đầu & STORE\_C của job đó xong OKAY \\
+\end{spectable}
+
+\begin{reqtable}{Điều kiện bank (PP-03, PP-04)}{tab:6-3}
+SB-01 & LOAD\_X vào bank b chỉ được bắt đầu khi \sig{rcnt[X][b]} = 0: mọi job đọc bank đó đã tính xong. Job \sig{reuse} = 1 không chờ (dữ liệu B của bank đó vẫn còn, vì chưa có LOAD\_B nào vào bank ấy kể từ job trước) \\
+SB-02 & COMPUTE vào bank C b chỉ được bắt đầu khi \sig{wcnt[C][b]} = 0: STORE\_C cuối cùng đọc bank đó đã xong \\
+SB-03 & Bộ đếm không bao giờ tràn hay âm (assertion). \sig{rcnt} tối đa 3 vì tối đa ba job đã gán bank mà chưa tính xong (engine Đọc, slot, engine Tính) \\
+SB-04 & Khi tác vụ kết thúc do lỗi, bộ đếm có thể khác 0; chúng được xóa khi chấp nhận tác vụ kế tiếp hoặc khi \sig{soft_clr} \\
+\end{reqtable}
+
+\subsection{Cấp quyền bắt đầu pha}\label{sec:6.3}
+Mỗi engine tính tín hiệu \sig{want} từ trạng thái đầu chu kỳ: \sig{want_s} (Ghi), \sig{want_c} (Tính), \sig{want_r} (Đọc: FETCH hoặc một LOAD). \sig{gemm_fsm_ctrl} trả \sig{go}.
+
+\eqbox{\[
+\begin{aligned}
+&\text{PP } (NB = 2): && go_x = want_x \wedge \neg inh \\
+&\text{SEQ } (NB = 1): && go_s = want_s \wedge \neg act \wedge \neg inh,\quad go_c = want_c \wedge \neg act \wedge \neg want_s \wedge \neg inh,\\
+& && go_r = want_r \wedge \neg act \wedge \neg want_s \wedge \neg want_c \wedge \neg inh
+\end{aligned}
+\]}
+Trong đó \sig{act} = (engine Đọc đang chờ một lệnh DMA) ∨ (engine Tính ở RUN) ∨ (engine Ghi ở RUN); \sig{inh} = tác vụ không ở trạng thái RUN (gồm SOFT, CLR). Ưu tiên Ghi > Tính > Đọc làm job cũ ra trước và cho đúng lịch tuần tự của hình 7-2a.
+
+\begin{reqtable}{Chặn sau lỗi (DSC-08)}{tab:6-4}
+BLK-01 & \sig{gemm_fsm_ctrl} cấp \sig{blk_v}, \sig{blk_idx} tổ hợp: bản ghi lỗi hiện có, gộp với lỗi đến trong chính chu kỳ này (\sig{i_rd_error}, \sig{i_wr_error}, kết quả CHECK sai), lấy chỉ số nhỏ nhất \\
+BLK-02 & Mọi \sig{want} của job có \sig{idx} ≥ \sig{blk_idx} bằng 0 khi \sig{blk_v} = 1. Nhờ gộp lỗi cùng chu kỳ, không pha nào của descriptor ≥ f bắt đầu, kể cả ở đúng chu kỳ lỗi được báo \\
+BLK-03 & Pha đã bắt đầu thì chạy tới hết (không abort khi lỗi). Kết quả của chúng không được ghi ra DRAM vì STORE\_C của job ≥ f không bao giờ bắt đầu \\
+\end{reqtable}
+
+% ===================== 7 =====================
+\section{Engine}\label{sec:7}
+
+\subsection{Lệnh DMA}\label{sec:7.1}
+\begin{spectable}{L{0.13}L{0.12}L{0.13}L{0.1}L{0.16}L{0.14}L{0.12}}{Tham số lệnh DMA của mỗi pha}{tab:7-1}{\textbf{Pha} & \textbf{dst / fmt} & \textbf{base} & \textbf{rows} & \textbf{rwords} & \textbf{stride} & \textbf{bank}}
+FETCH & 3 (desc) & con trỏ & 1 & 16 & 64 & 0 \\
+LOAD\_BIAS & 2 (BIAS) & \sig{bias} & 1 & N & 4N & \sig{bbias} \\
+LOAD\_A & 0 (A) & \sig{a} & M & K/4 & \sig{lda} & \sig{ba} \\
+LOAD\_B & 1 (B) & \sig{b} & K & N/4 & \sig{ldb} & \sig{bb} \\
+STORE\_C & \sig{post} & \sig{c} & M & \sig{post} ? N/4 : N & \sig{ldc} & \sig{bc} \\
+\end{spectable}
+
+\subsection{Engine Đọc}\label{sec:7.2}
+\begin{spectable}{L{0.14}L{0.5}L{0.36}}{Trạng thái của \sigc{gemm_rd_engine}}{tab:7-2}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
+R\_IDLE & Chờ & R\_START khi ctrl khởi động tác vụ \\
+R\_START & Chế độ đơn: nạp job từ bản chụp. Chuỗi: con trỏ ← \sig{DESC_PTR}, idx ← 0 & R\_CHECK (đơn) / R\_FETCH (chuỗi) \\
+R\_FETCH & \sig{want_r} = 1. Khi \sig{go_r}: phát FETCH & R\_FWAIT \\
+R\_FWAIT & Nhận word descriptor; chờ \sig{i_rd_done} / \sig{i_rd_error} & R\_CHECK / R\_STOP (lỗi mã 4) \\
+R\_CHECK & 1 chu kỳ: \sig{gemm_job_check}; nếu hợp lệ, gán bank (BNK-02) & R\_WAITP / R\_STOP (lỗi mã 1) \\
+R\_WAITP & Nếu \sig{waitp} = 1: chờ \sig{desc_done_cnt == idx} (mọi STORE\_C trước đã xong, DSC-05) & R\_LBIAS nếu \sig{post}, ngược lại R\_LA \\
+R\_LBIAS, R\_LA, R\_LB & \sig{want_r} = (\sig{rcnt[X][bank]} = 0). Khi \sig{go_r}: \sig{rcnt[X][bank]++}, phát lệnh theo bảng~\ref{tab:7-1} & R\_LWAIT \\
+R\_LWAIT & Chờ \sig{i_rd_done} / \sig{i_rd_error} & tiếp theo thứ tự BIAS → A → (B hoặc RB) → PUSH / R\_STOP (lỗi mã 2) \\
+R\_RB & Job \sig{reuse}: \sig{rcnt[B][bb]++}, không phát lệnh & R\_PUSH \\
+R\_PUSH & Khi slot trống: slot ← job. Chuỗi và \sig{last} = 0: \sig{prev_kn} ← (K, N), con trỏ ← \sig{next}, idx++ & R\_FETCH; hoặc R\_STOP nếu \sig{last} = 1 hoặc chế độ đơn \\
+R\_STOP & Không làm gì tới hết tác vụ & — \\
+\end{spectable}
+
+\begin{reqtable}{Engine Đọc}{tab:7-3}
+RDE-01 & Ở mọi trạng thái chờ (R\_FETCH, R\_WAITP, R\_LBIAS, R\_LA, R\_LB, R\_PUSH): nếu job bị chặn (BLK-02) thì sang R\_STOP, không đẩy job vào slot \\
+RDE-02 & Engine Đọc làm xong mọi LOAD của job d rồi mới FETCH job d+1 (PP-02). \sig{WAIT_PREV} không chặn FETCH và CHECK (PP-06) \\
+RDE-03 & Bộ đệm descriptor ghi word \sig{i_desc_idx} khi \sig{i_desc_valid}. Dữ liệu của FETCH bị lỗi không được dùng \\
+RDE-04 & \sig{o_perf_load} = 1 khi ở R\_LWAIT (không tính FETCH) \\
+\end{reqtable}
+
+\subsection{Engine Tính và engine Ghi}\label{sec:7.3}
+\begin{spectable}{L{0.14}L{0.52}L{0.34}}{Trạng thái của \sigc{gemm_cp_engine} và \sigc{gemm_wr_engine}}{tab:7-4}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
+C\_IDLE & \sig{want_c} = slot có job ∧ \sig{wcnt[C][slot.bc]} = 0. Khi \sig{go_c}: job ← slot, slot trống, \sig{wcnt++}, \sig{o_pe_start} = 1 ở chu kỳ kế tiếp & C\_RUN \\
+C\_RUN & \sig{o_comp_active} = \sig{o_perf_comp} = 1. Khi \sig{i_pe_done}: giảm \sig{rcnt[A][ba]}, \sig{rcnt[B][bb]}, và \sig{rcnt[BIAS][bbias]} nếu \sig{post} & C\_HAND \\
+C\_HAND & Giữ job (và bank C) cho engine Ghi & C\_IDLE khi engine Ghi nhận job \\
+\midrule
+S\_IDLE & \sig{want_s} = engine Tính ở C\_HAND. Khi \sig{go_s}: job ← job của engine Tính, phát STORE\_C ở chu kỳ kế tiếp & S\_RUN \\
+S\_RUN & \sig{o_perf_store} = 1. \sig{i_wr_done}: \sig{wcnt[C][bc]--}; ở chế độ chuỗi \sig{desc_done_cnt++}; nếu \sig{last} = 1, báo job cuối xong. \sig{i_wr_error}: lỗi mã 3 & S\_IDLE \\
+\end{spectable}
+
+\begin{notebox}[Vì sao engine Tính giữ job ở C\_HAND không làm chậm]
+COMPUTE(d+1) dùng bank C của job d−1, nên theo PP-04 chỉ bắt đầu được khi STORE\_C(d−1) xong. Đúng lúc đó engine Ghi rảnh và nhận job d, nên engine Tính về C\_IDLE và có thể bắt đầu d+1 ngay chu kỳ sau. Với NB = 1, lịch vốn đã tuần tự.
+\end{notebox}
+
+% ===================== 8 =====================
+\section{Điều khiển tác vụ}\label{sec:8}
+
+\begin{spectable}{L{0.13}L{0.55}L{0.32}}{Trạng thái của \sigc{gemm_fsm_ctrl}}{tab:8-1}{\textbf{Trạng thái} & \textbf{Làm gì} & \textbf{Sang}}
+T\_IDLE & Chờ. \sig{i_start_pulse}: xóa bản ghi lỗi, \sig{desc_done_cnt}, \sig{err_desc_addr}, con trỏ bank, bộ đếm; xét \sig{i_start_kind} (bảng~\ref{tab:8-2}) & T\_RUN. \sig{i_soft_req}: T\_CLR \\
+T\_RUN & Engine chạy. Kiểm điều kiện kết thúc (TSK-01 … TSK-03 dưới) & T\_IDLE khi done/err; T\_SOFT khi \sig{i_soft_req} \\
+T\_SOFT & \sig{inh} = 1; bật \sig{o_rd_abort} khi kênh đọc bận, \sig{o_wr_abort} khi kênh ghi bận; không báo done/err & T\_CLR khi không engine nào chờ lệnh DMA \\
+T\_CLR & \sig{o_soft_clr} = 1 trong 1 chu kỳ; mọi thanh ghi của FSM về giá trị reset & T\_IDLE \\
+\end{spectable}
+
+\begin{spectable}{L{0.2}L{0.8}}{Xử lý \sigc{i_start_kind}}{tab:8-2}{\textbf{Giá trị} & \textbf{Hành vi}}
+2'b01 (START) & Chế độ đơn: engine Đọc vào R\_START \\
+2'b10 (START\_CHAIN) & \sig{HAS_CHAIN} = 0: lỗi mã 5. \sig{DESC_PTR}[5:0] ≠ 0: lỗi mã 1 (CHK-07). Ngược lại: chế độ chuỗi \\
+2'b11 & Lỗi mã 1 (REG-05). Không engine nào chạy, không truy cập bus \\
+\end{spectable}
+
+\begin{reqtable}{Kết thúc tác vụ}{tab:8-3}
+TSK-F01 & Bản ghi lỗi (\sig{err_v}, \sig{err_idx}, \sig{err_code}, \sig{err_addr}) chỉ được thay khi lỗi mới có idx nhỏ hơn (DSC-08). Mã: FETCH → 4, CHECK → 1, LOAD\_* → 2, STORE\_C → 3. \sig{err_addr} = \sig{daddr} của job lỗi; = con trỏ đang FETCH với lỗi mã 4; = \sig{DESC_PTR} với CHK-07 \\
+TSK-F02 & DONE: ở T\_RUN, engine Ghi báo job có \sig{last} = 1 xong OKAY và \sig{err_v} = 0 → \sig{o_done_pulse} ở chu kỳ kế tiếp \\
+TSK-F03 & ERROR: ở T\_RUN, \sig{err_v} = 1 và hệ yên: engine Đọc ở R\_STOP và không chờ DMA; engine Tính không ở C\_RUN; slot trống hoặc có idx ≥ f; engine Tính không giữ ở C\_HAND một job idx < f; engine Ghi ở S\_IDLE → \sig{o_err_pulse} với \sig{o_err_code} = \sig{err_code} ở chu kỳ kế tiếp; \sig{o_err_desc_addr} ← \sig{err_addr} (chỉ ở chế độ chuỗi) \\
+TSK-F04 & Khi đó \sig{o_desc_done_cnt} = f tự nhiên, vì mọi job < f đã ghi xong và không job ≥ f nào được ghi \\
+TSK-F05 & \sig{o_err_desc_addr} và \sig{o_desc_done_cnt} bằng 0 ở chế độ đơn và khi \sig{HAS_CHAIN} = 0 \\
+\end{reqtable}
+
+\begin{reqtable}{Soft reset (RST-05 … RST-09, PP-09)}{tab:8-4}
+SFT-01 & \sig{o_soft_busy} = 1 ở T\_SOFT và T\_CLR \\
+SFT-02 & Ở T\_SOFT: không pha mới nào bắt đầu; lệnh DMA đang chạy kết thúc bằng done hoặc error như thường (DMA-10); engine vẫn nhận các xung đó để rời trạng thái chờ, nhưng không cập nhật bản ghi lỗi hay báo done \\
+SFT-03 & COMPUTE đang chạy không được chờ: \sig{o_soft_clr} hủy array và VPU (RST-06) \\
+SFT-04 & \sig{i_soft_req} ở T\_IDLE: T\_CLR ở chu kỳ kế tiếp. \sig{i_soft_req} ở T\_SOFT hoặc T\_CLR: bỏ qua (RST-07) \\
+SFT-05 & Nếu \sig{i_soft_req} đến cùng chu kỳ với \sig{i_rd_done} hoặc \sig{i_wr_done}, kênh đó coi như đã rảnh (RST-09) \\
+\end{reqtable}
+
+% ===================== 9 =====================
+\section{Timing}\label{sec:9}
+
+\begin{spectable}{L{0.58}L{0.42}}{Độ trễ cố định của FSM}{tab:9-1}{\textbf{Sự kiện} & \textbf{Chu kỳ}}
+\sig{i_start_pulse} → engine Đọc ở R\_START & +1 \\
+R\_CHECK & 1 chu kỳ \\
+\sig{go_*} = 1 → \sig{o_rd_start} / \sig{o_wr_start} / \sig{o_pe_start} = 1 & +1 \\
+\sig{i_*_done} → trạng thái kế tiếp của engine & +1 \\
+Điều kiện DONE / ERROR → \sig{o_done_pulse} / \sig{o_err_pulse} & +1 \\
+\sig{i_soft_req} ở T\_IDLE → \sig{o_soft_clr} & +1 \\
+\end{spectable}
+
+\clearpage
+\subsection{Ví dụ lịch chạy}
+Chuỗi ba descriptor giống nhau (M = N = K = 16, \sig{POST_EN} = 1), thời lượng giả định của mỗi lệnh: FETCH 5, LOAD\_BIAS 6, LOAD\_A 20, LOAD\_B 20, COMPUTE 40, STORE\_C 22 chu kỳ. Hình lấy đúng từ \sig{gemm_sched_model.py}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=0.037cm,y=1cm,
+  ph/.style={draw=white,line width=0.4pt,font=\tiny\bfseries,text=white,inner sep=0pt,anchor=south west,minimum height=0.42cm}]
+\newcommand{\pb}[5]{\node[ph,fill=#1,minimum width={(#3-#2)*0.037cm}] at (#2,#4) {#5};}
+\node[anchor=west,font=\small\bfseries,text=brand] at (-30,4.55) {NB = 1 (SEQ): 385 chu kỳ};
+\foreach \y/\t in {3.95/Đọc,3.4/Tính,2.85/Ghi}{\node[anchor=east,font=\scriptsize] at (-2,\y+0.2) {\t};}
+\pb{brand!55}{1}{7}{3.95}{} \pb{data!70}{10}{17}{3.95}{} \pb{data}{18}{39}{3.95}{A0} \pb{data}{40}{61}{3.95}{B0}
+\pb{brand}{63}{104}{3.4}{C0} \pb{data!55}{105}{128}{2.85}{S0}
+\pb{brand!55}{129}{135}{3.95}{} \pb{data!70}{138}{145}{3.95}{} \pb{data}{146}{167}{3.95}{A1} \pb{data}{168}{189}{3.95}{B1}
+\pb{brand}{191}{232}{3.4}{C1} \pb{data!55}{233}{256}{2.85}{S1}
+\pb{brand!55}{257}{263}{3.95}{} \pb{data!70}{266}{273}{3.95}{} \pb{data}{274}{295}{3.95}{A2} \pb{data}{296}{317}{3.95}{B2}
+\pb{brand}{319}{360}{3.4}{C2} \pb{data!55}{361}{384}{2.85}{S2}
+\draw[muted,->] (0,2.75) -- (395,2.75);
+\node[anchor=west,font=\small\bfseries,text=brand] at (-30,2.15) {NB = 2 (ping-pong): 253 chu kỳ};
+\foreach \y/\t in {1.55/Đọc,1.0/Tính,0.45/Ghi}{\node[anchor=east,font=\scriptsize] at (-2,\y+0.2) {\t};}
+\pb{brand!55}{1}{7}{1.55}{} \pb{data!70}{10}{17}{1.55}{} \pb{data}{18}{39}{1.55}{A0·b0} \pb{data}{40}{61}{1.55}{B0·b0}
+\pb{brand!55}{63}{69}{1.55}{} \pb{data!70}{72}{79}{1.55}{} \pb{data}{80}{101}{1.55}{A1·b1} \pb{data}{102}{123}{1.55}{B1·b1}
+\pb{brand!55}{125}{131}{1.55}{} \pb{data!70}{134}{141}{1.55}{} \pb{data}{142}{163}{1.55}{A2·b0} \pb{data}{164}{185}{1.55}{B2·b0}
+\pb{brand}{63}{104}{1.0}{C0·b0} \pb{brand}{125}{166}{1.0}{C1·b1} \pb{brand}{187}{228}{1.0}{C2·b0}
+\pb{data!55}{105}{128}{0.45}{S0} \pb{data!55}{167}{190}{0.45}{S1} \pb{data!55}{229}{252}{0.45}{S2}
+\draw[muted,->] (0,0.35) -- (395,0.35) node[right,font=\scriptsize]{t};
+\foreach \t in {0,100,200,300}{\node[font=\tiny,text=muted,anchor=north] at (\t,0.33) {\t};}
+\node[ph,fill=brand!55,minimum width=0.4cm] at (0,-0.55) {}; \node[anchor=west,font=\scriptsize] at (12,-0.34) {FETCH};
+\node[ph,fill=data!70,minimum width=0.4cm] at (60,-0.55) {}; \node[anchor=west,font=\scriptsize] at (72,-0.34) {LOAD\_BIAS};
+\node[ph,fill=data,minimum width=0.4cm] at (140,-0.55) {}; \node[anchor=west,font=\scriptsize] at (152,-0.34) {LOAD\_A, LOAD\_B};
+\node[ph,fill=brand,minimum width=0.4cm] at (240,-0.55) {}; \node[anchor=west,font=\scriptsize] at (252,-0.34) {COMPUTE};
+\node[ph,fill=data!55,minimum width=0.4cm] at (320,-0.55) {}; \node[anchor=west,font=\scriptsize] at (332,-0.34) {STORE\_C};
+\end{tikzpicture}
+\caption{Lịch của cùng một chuỗi khi NB = 1 và NB = 2. Với NB = 2, FETCH và LOAD của descriptor d+1 chạy trong lúc COMPUTE(d) và STORE\_C(d−1); tổng thời gian giảm từ 385 xuống 253 chu kỳ}\label{fig:9-1}
+\end{figure}
+
+% ===================== 10 =====================
+\section{Reset, hiện thực, kiểm chứng}\label{sec:10}
+
+\begin{reqtable}{Reset}{tab:10-1}
+RST-F01 & \sig{rst_n} = 0 hoặc T\_CLR: mọi engine về trạng thái IDLE, slot trống, bản ghi lỗi, con trỏ bank, bộ đếm, \sig{desc_done_cnt}, \sig{err_desc_addr}, mọi xung đầu ra về 0. Trường dữ liệu của job không bắt buộc reset \\
+\end{reqtable}
+
+\begin{reqtable}{Hiện thực}{tab:10-2}
+IMP-01 & SystemVerilog tổng hợp được; FSM viết theo kiểu hai khối (\sig{always_ff} trạng thái, \sig{always_comb} trạng thái kế); không có latch \\
+IMP-02 & \sig{job_t} khai báo trong \sig{gemm_pkg} là \sig{struct packed}; công cụ tổng hợp tự bỏ trường không dùng ở mỗi engine \\
+IMP-03 & Với \sig{HAS_CHAIN} = 0, logic FETCH, bộ đệm descriptor, CHK-01 … CHK-07 và \sig{desc_done_cnt} được loại bằng \sig{generate}. Với NB = 1, bộ đếm và con trỏ bank được loại, các điều kiện bank luôn đúng trừ quy tắc SEQ \\
+IMP-04 & Mọi so sánh idx dùng 32 bit không dấu \\
+\end{reqtable}
+
+\begin{reqtable}{Assertion bắt buộc (SVA)}{tab:10-3}
+AS-01 & \sig{o_rd_start} → kênh đọc rảnh; \sig{o_wr_start} → kênh ghi rảnh; \sig{o_pe_start} → \sig{!i_pe_busy} \\
+AS-02 & NB = 1: tại mọi chu kỳ có tối đa một trong \{engine Đọc chờ DMA, C\_RUN, S\_RUN\} \\
+AS-03 & Không bộ đếm nào tràn hay âm (SB-03) \\
+AS-04 & LOAD\_X bắt đầu vào bank b → không job nào ở slot, C\_RUN hay C\_HAND chưa tính xong có bank X = b (trừ job reuse) \\
+AS-05 & STORE\_C bắt đầu theo thứ tự idx tăng dần 1 \\
+AS-06 & \sig{o_done_pulse} ∧ \sig{o_err_pulse} không bao giờ cùng lúc; mỗi \sig{i_start_pulse} có tối đa một trong hai \\
+AS-07 & \sig{o_comp_*} ổn định trong khi C\_RUN \\
+\end{reqtable}
+
+\Needspace{10\baselineskip}
+\begin{notebox}[Kiểm chứng bằng mô hình]
+\sig{gemm_sched_model.py} chạy 1 200 chuỗi ngẫu nhiên 1 – 7 descriptor (stride, \sig{REUSE_B}, \sig{WAIT_PREV} với descriptor đọc kết quả của descriptor trước, descriptor sai, lỗi AXI tiêm ngẫu nhiên ở FETCH/LOAD/STORE) với cả NB = 1 và NB = 2, và 300 tác vụ chế độ đơn. Mọi bên đọc lấy dữ liệu ở đầu và cuối pha và phải thấy giống nhau, nên ghi đè sai bank bị phát hiện. Kết quả: DRAM khớp thực thi tuần tự ở mọi chuỗi DONE; với lỗi, \sig{DESC_DONE_CNT} = f, \sig{ERR_DESC_ADDR} đúng, không pha nào của job ≥ f bắt đầu sau lỗi; NB = 1 không có hai pha chồng nhau. Mô hình đã bắt hai lỗi quy tắc trong quá trình thiết kế (đường \sig{REUSE_B} và lỗi cùng chu kỳ), dẫn tới bước R\_RB và BLK-01.
+\end{notebox}
+
+\appendix
+\section{Nối dây nội bộ trong \texorpdfstring{\sigc{gemm_accel_top}}{gemm\_accel\_top}}\label{sec:A}
+
+\begin{spectable}{L{0.3}L{0.3}L{0.4}}{Kết nối giữa các module (bản full option)}{tab:A-1}{\textbf{Từ} & \textbf{Tới} & \textbf{Tín hiệu}}
+RF \sig{o_start_pulse}, \sig{o_start_kind}, \sig{o_soft_req}, \sig{o_cfg_*} & FSM \sig{i_*} cùng tên & Mục~\ref{sec:3} \\
+FSM \sig{o_done_pulse}, \sig{o_err_*}, \sig{o_perf_*}, \sig{o_soft_busy}, \sig{o_err_desc_addr}, \sig{o_desc_done_cnt} & RF \sig{i_*} cùng tên & \\
+FSM \sig{o_soft_clr} & \sig{i_soft_clr} của RF, DMA, SRAM, Array, VPU & \\
+FSM \sig{o_rd_*}, \sig{o_wr_*} & DMA \sig{i_rd_*}, \sig{i_wr_*} & Lệnh hai kênh \\
+DMA \sig{o_rd_busy/done/error}, \sig{o_desc_*}, \sig{o_wr_busy/done/error} & FSM \sig{i_*} cùng tên & \\
+DMA \sig{o_spm_wr_*}, \sig{o_spm_rd_*} & SRAM \sig{i_dw_*}, \sig{i_dr_*} & Spec DMA, spec SRAM \\
+SRAM \sig{o_dw_ready}, \sig{o_dr_ready}, \sig{o_dr_rvalid}, \sig{o_dr_rdata} & DMA \sig{i_spm_*} & \\
+FSM \sig{o_pe_start}; Array \sig{o_pe_done}, \sig{o_busy} & Array \sig{i_pe_start}; FSM \sig{i_pe_done}, \sig{i_pe_busy} & \\
+FSM \sig{o_comp_dim} & Array \sig{i_matrix_dim} & \\
+FSM \sig{o_comp_post_en/relu_en/qm0/qshift} & VPU \sig{i_post_en/relu_en/quant_m0/quant_shift} & \\
+FSM \sig{o_comp_bank_*}, \sig{o_comp_active} & SRAM \sig{i_comp_bank_*}, \sig{i_comp_active} & \\
+Array \sig{o_a_rd_*}, \sig{o_b_rd_*} ↔ SRAM & SRAM \sig{i_a_rd_*}, \sig{i_b_rd_*}, \sig{o_a_rd_data}, \sig{o_b_rd_data} & Spec array mục 3 \\
+Array \sig{o_row_*} & VPU \sig{i_row_*} & Spec VPU mục 3 \\
+VPU \sig{o_bias_rd_*}, \sig{o_c_wr_*} ↔ SRAM & SRAM \sig{i_bias_rd_*}, \sig{o_bias_rd_data}, \sig{i_c_wr_*} & \\
+top \sig{s_axi_*} & RF & 17 tín hiệu \\
+DMA \sig{m_axi_*} & top & 25 tín hiệu \\
+\end{spectable}
+
+\end{document}

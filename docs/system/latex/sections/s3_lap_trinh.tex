@@ -1,0 +1,113 @@
+% Mục 3 — Mô hình lập trình
+\section{Mô hình lập trình}\label{sec:3}
+
+\begin{keypoint}
+Firmware ghi A, B (và bias) vào DRAM, ghi kích thước, địa chỉ và tham số hậu xử lý vào thanh ghi, ghi START, rồi đọc STATUS cho tới khi DONE hoặc ERROR bằng 1. Register map dưới đây đã khóa: phần bổ sung ở mục~\ref{sec:7} chỉ dùng các offset và bit đang để dự trữ cho nó.
+\end{keypoint}
+
+\subsection{Register map}\label{sec:3.1}
+Địa chỉ tuyệt đối = \sig{MMIO_BASE} + offset. Vùng MMIO rộng 4 KiB (0x6000\_0000 … 0x6000\_0FFF).
+
+\begin{spectable}{L{0.1}L{0.2}L{0.1}L{0.08}L{0.52}}{Register map}{tab:3-1}{\textbf{Offset} & \textbf{Tên} & \textbf{Truy cập} & \textbf{Reset} & \textbf{Nội dung}}
+0x00 & \sig{CTRL_REG} & W (đọc 0) & 0 & [0] START, [1] SOFT\_RESET, [2] START\_CHAIN (mục~\ref{sec:7.2}), [31:3] dự trữ \\
+0x04 & \sig{STATUS_REG} & R & 0 & [0] DONE, [1] BUSY, [2] ERROR, [3] MODE, [7:4] \sig{ERR_CODE}, [31:8] = 0 \\
+0x08 & \sig{MATRIX_DIM} & R/W & 0 & M, N, K (bảng~\ref{tab:2-2}) \\
+0x0C & \sig{BASE_ADDR_IN} & R/W & 0 & Địa chỉ byte của A \\
+0x10 & \sig{BASE_ADDR_WEIGHT} & R/W & 0 & Địa chỉ byte của B \\
+0x14 & \sig{BASE_ADDR_OUT} & R/W & 0 & Địa chỉ byte của C hoặc Y \\
+0x18 & \sig{POST_CTRL} & R/W & 0 & [0] \sig{POST_EN}, [1] \sig{RELU_EN}, [31:2] dự trữ \\
+0x1C & \sig{BIAS_ADDR} & R/W & 0 & Địa chỉ byte của vector bias \\
+0x20 & \sig{QUANT_M0} & R/W & 0 & $M_0$ của FUN-03 \\
+0x24 & \sig{QUANT_SHIFT} & R/W & 0 & [4:0] $sh$ của FUN-03, [31:5] dự trữ \\
+0x28 & \sig{HW_CONFIG} & R & hằng & Cấu hình phần cứng (bảng~\ref{tab:3-3}) \\
+0x2C & \sig{PERF_TOTAL} & R & 0 & Số chu kỳ BUSY = 1 của tác vụ \\
+0x30 & \sig{PERF_LOAD} & R & 0 & Số chu kỳ DMA thực hiện LOAD\_* \\
+0x34 & \sig{PERF_COMPUTE} & R & 0 & Số chu kỳ pha COMPUTE \\
+0x38 & \sig{PERF_STORE} & R & 0 & Số chu kỳ DMA thực hiện STORE\_C \\
+0x3C & — & — & — & Dự trữ \\
+0x40 & \sig{DESC_PTR} & R/W & 0 & Dành cho phần bổ sung (mục~\ref{sec:7.2}); không có thì đọc 0, ghi bị bỏ qua \\
+0x44 & \sig{ERR_DESC_ADDR} & R & 0 & Như trên \\
+0x48 & \sig{DESC_DONE_CNT} & R & 0 & Như trên \\
+0x4C–0xFFC & — & — & — & Dự trữ \\
+\end{spectable}
+
+\begin{spectable}{L{0.12}L{0.25}L{0.63}}{Mã lỗi \sigc{ERR_CODE} (STATUS[7:4])}{tab:3-2}{\textbf{Giá trị} & \textbf{Ý nghĩa} & \textbf{Khi nào xuất hiện}}
+0 & Không lỗi & ERROR = 0 \\
+1 & Cấu hình sai & Bản chụp cấu hình vi phạm REG-12; hoặc START và START\_CHAIN cùng được ghi 1 \\
+2 & Lỗi AXI khi đọc & LOAD\_A, LOAD\_B hoặc LOAD\_BIAS gặp \sig{rresp} ≠ OKAY hoặc \sig{rlast} sai vị trí \\
+3 & Lỗi AXI khi ghi & STORE\_C gặp \sig{bresp} ≠ OKAY \\
+4 & Lỗi AXI khi đọc descriptor & Chỉ có với phần bổ sung (mục~\ref{sec:7.2}) \\
+5 & Tính năng không có & START\_CHAIN khi phần cứng không có chế độ chuỗi \\
+6–15 & Dự trữ & Không bao giờ xuất hiện \\
+\end{spectable}
+
+\begin{spectable}{L{0.12}L{0.25}L{0.63}}{Bố cục \sigc{HW_CONFIG}}{tab:3-3}{\textbf{Bit} & \textbf{Trường} & \textbf{Giá trị}}
+{}[7:0] & P & 4 hoặc 8 \\
+{}[15:8] & \sig{MAX_DIM} & 32 \\
+{}[16] & \sig{HAS_CHAIN} & 1 nếu có chế độ chuỗi descriptor (mục~\ref{sec:7.2}) \\
+{}[17] & \sig{HAS_PINGPONG} & 1 nếu có scratchpad ping-pong (mục~\ref{sec:7.3}) \\
+{}[23:18] & dự trữ & 0 \\
+{}[31:24] & \sig{SPEC_VER} & 0x10 (spec v1.0) \\
+\end{spectable}
+
+\subsection{Yêu cầu thanh ghi}\label{sec:3.2}
+
+\begin{reqtable}{Thanh ghi}{tab:3-4}
+REG-01 & Offset, tên, quyền truy cập và giá trị reset như bảng~\ref{tab:3-1} \\
+REG-02 & CTRL[0] START: ghi 1 là yêu cầu bắt đầu tác vụ; bit tự xóa, đọc luôn ra 0; ghi 0 không có tác dụng \\
+REG-03 & CTRL[1] SOFT\_RESET: ghi 1 là yêu cầu soft reset (mục~\ref{sec:4.5}); tự xóa \\
+REG-04 & CTRL[2] START\_CHAIN: khi \sig{HAS_CHAIN} = 0, lệnh vẫn được chấp nhận như một tác vụ và kết thúc ngay với ERROR, \sig{ERR_CODE} = 5, không truy cập bus \\
+REG-05 & Một lần ghi CTRL có SOFT\_RESET = 1: chỉ SOFT\_RESET có hiệu lực. Không có SOFT\_RESET mà START = START\_CHAIN = 1: tác vụ được chấp nhận và kết thúc ngay với \sig{ERR_CODE} = 1 \\
+REG-06 & STATUS.MODE = 0 với tác vụ START, = 1 với tác vụ START\_CHAIN; giữ giá trị của tác vụ gần nhất. \sig{ERR_CODE} = 0 khi ERROR = 0 \\
+REG-07 & Thanh ghi R/W được ghi bất kỳ lúc nào, kể cả khi BUSY = 1. Đọc lại trả giá trị CPU đã ghi, không phải bản chụp. Giá trị mới áp dụng từ lần START được chấp nhận tiếp theo \\
+REG-08 & Thanh ghi R/W lưu đủ 32 bit, kể cả bit dự trữ, để kiểm tra được REG-12. Bit dự trữ của CTRL và STATUS: ghi bị bỏ qua, đọc ra 0. Offset dự trữ: đọc ra 0, ghi bị bỏ qua. Ghi vào thanh ghi chỉ đọc bị bỏ qua \\
+REG-09 & \sig{rst_n} đưa mọi thanh ghi về giá trị reset. Soft reset giữ nguyên các thanh ghi R/W; xóa STATUS và \sig{PERF_*} \\
+REG-10 & \sig{PERF_*} về 0 ở chu kỳ START được chấp nhận, đếm trong lúc BUSY = 1, dừng khi tác vụ kết thúc, bão hòa ở 0xFFFF\_FFFF \\
+REG-11 & Bản chụp cấu hình gồm \sig{MATRIX_DIM}, ba \sig{BASE_ADDR_*}, \sig{POST_CTRL}, \sig{BIAS_ADDR}, \sig{QUANT_M0}, \sig{QUANT_SHIFT}; lấy ở chu kỳ START được chấp nhận và giữ ổn định tới hết tác vụ \\
+REG-12 & Cấu hình hợp lệ khi và chỉ khi: M, N, K trong miền bảng~\ref{tab:2-2}; \sig{MATRIX_DIM[31:24]} = 0; \sig{BASE_ADDR_IN}, \sig{BASE_ADDR_WEIGHT}, \sig{BASE_ADDR_OUT} có bit [1:0] = 0; \sig{POST_CTRL[31:2]} = 0; \sig{RELU_EN} = 1 kéo theo \sig{POST_EN} = 1; nếu \sig{POST_EN} = 1 thì \sig{BIAS_ADDR[1:0]} = 0 và \sig{QUANT_SHIFT[31:5]} = 0. Khi \sig{POST_EN} = 0, \sig{BIAS_ADDR}, \sig{QUANT_M0}, \sig{QUANT_SHIFT} bị bỏ qua \\
+\end{reqtable}
+
+\subsection{Ngữ nghĩa tác vụ}\label{sec:3.3}
+
+\begin{reqtable}{Tác vụ}{tab:3-5}
+TSK-01 & START chỉ được chấp nhận nếu BUSY = 0 tại chu kỳ Register File thực hiện lệnh ghi CTRL. START khi BUSY = 1 bị bỏ qua, không đổi trạng thái, không báo lỗi \\
+TSK-02 & Ngay chu kỳ chấp nhận: chụp cấu hình (REG-11); xóa DONE, ERROR, \sig{ERR_CODE}, \sig{PERF_*}; đặt MODE. BUSY = 1 từ chu kỳ kế tiếp \\
+TSK-03 & Register File phát \sig{start_pulse} và chụp cấu hình trước khi trả phản hồi B cho lệnh ghi CTRL; mọi lần đọc STATUS sau khi lệnh ghi hoàn tất đều thấy tác vụ mới \\
+TSK-04 & DONE = 1 chỉ khi STORE\_C đã nhận phản hồi B cuối cùng là OKAY, tức toàn bộ kết quả đã nằm trong DRAM \\
+TSK-05 & ERROR = 1 khi gặp một lỗi ở bảng~\ref{tab:3-2}; sau lỗi không pha mới nào được bắt đầu; nội dung vùng đích trong DRAM không xác định \\
+TSK-06 & BUSY về 0 ở đúng cạnh clock mà DONE hoặc ERROR được đặt. Sau khi chấp nhận và cho tới tác vụ kế tiếp hoặc soft reset, mọi lần đọc STATUS thấy đúng một trong ba bit BUSY, DONE, ERROR bằng 1 \\
+TSK-07 & DONE và ERROR giữ giá trị (sticky); chỉ bị xóa khi tác vụ mới được chấp nhận, khi soft reset hoặc khi \sig{rst_n} \\
+TSK-08 & Sau DONE hoặc ERROR, firmware được phép ghi START ngay, không cần soft reset \\
+TSK-09 & Tín hiệu “xong” nội bộ (xong một lệnh DMA, \sig{pe_done}) không hiện ra cho CPU; chỉ STATUS.DONE báo toàn bộ tác vụ xong \\
+\end{reqtable}
+
+\subsection{Quy tắc cho firmware}\label{sec:3.4}
+
+\begin{reqtable}{Firmware}{tab:3-6}
+FW-01 & Trước lệnh ghi START, firmware thực hiện \sig{fence rw,rw}, để mọi lệnh ghi A, B, bias vào DRAM đến trước lệnh MMIO \\
+FW-02 & Firmware chờ bằng polling cho tới khi DONE hoặc ERROR bằng 1, rồi thực hiện \sig{fence rw,rw} trước khi đọc kết quả \\
+FW-03 & Đường DMA được giả định nhất quán cache với CPU. Nếu hệ thống tích hợp không bảo đảm điều đó, firmware phải flush dòng cache của A, B, bias trước START và hủy dòng cache của vùng đích sau DONE \\
+FW-04 & Firmware không ghi vào vùng DRAM của tác vụ đang chạy \\
+\end{reqtable}
+
+\begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
+#define GEMM_BASE  0x60000000u
+#define REG(off)   (*(volatile uint32_t *)(GEMM_BASE + (off)))
+#define ST_DONE    (1u << 0)
+#define ST_ERROR   (1u << 2)
+
+int gemm_run(uint32_t a, uint32_t b, uint32_t c, uint32_t M, uint32_t N,
+             uint32_t K, int post, int relu, uint32_t bias,
+             int32_t m0, uint32_t sh) {
+    REG(0x08) = (K << 16) | (N << 8) | M;     /* MATRIX_DIM   */
+    REG(0x0C) = a;  REG(0x10) = b;  REG(0x14) = c;
+    REG(0x18) = (post ? 1u : 0u) | (relu ? 2u : 0u);
+    REG(0x1C) = bias;  REG(0x20) = (uint32_t)m0;  REG(0x24) = sh;
+    asm volatile ("fence rw,rw");             /* FW-01 */
+    REG(0x00) = 1u;                           /* START */
+    uint32_t s;
+    do { s = REG(0x04); } while (!(s & (ST_DONE | ST_ERROR)));
+    asm volatile ("fence rw,rw");             /* FW-02 */
+    return (s & ST_ERROR) ? (int)((s >> 4) & 0xFu) : 0;
+}
+\end{Verbatim}

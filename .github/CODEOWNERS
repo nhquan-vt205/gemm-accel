@@ -1,0 +1,17 @@
+# Mỗi dòng: <đường dẫn> <tài khoản GitHub của người phụ trách>
+# Bỏ dấu # đầu dòng và điền tên khi đã chia việc. PR sửa thư mục nào sẽ tự gán người đó review.
+# /src/rtl/systolic_array/      <github-user>
+# /src/tb/unit/systolic_array/  <github-user>
+# /src/rtl/vpu/                 <github-user>
+# /src/tb/unit/vpu/             <github-user>
+# /src/rtl/local_sram/          <github-user>
+# /src/tb/unit/local_sram/      <github-user>
+# /src/rtl/dma_engine/          <github-user>
+# /src/tb/unit/dma_engine/      <github-user>
+# /src/rtl/main_fsm/            <github-user>
+# /src/tb/unit/main_fsm/        <github-user>
+# /src/rtl/register_file/       <github-user>
+# /src/tb/unit/register_file/   <github-user>
+# /src/rtl/top/                 <github-user>
+# /src/tb/top/                  <github-user>
+# /docs/system/                 <github-user>

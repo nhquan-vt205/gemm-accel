@@ -1,0 +1,119 @@
+% Mục 5 — Vận hành của các khối
+\section{Vận hành của các khối}\label{sec:5}
+
+\begin{keypoint}
+Mục này quy định mỗi khối làm gì và cam kết gì với các khối xung quanh: kiểu bắt tay, thông lượng, độ trễ. Port nội bộ chi tiết (tên, độ rộng, căn chu kỳ) nằm trong spec của từng module và có thể thay đổi, miễn là giữ đúng các cam kết ở đây.
+\end{keypoint}
+
+\begin{spectable}{L{0.21}L{0.22}L{0.57}}{Giao tiếp nội bộ}{tab:5-0}{\textbf{Giữa} & \textbf{Kiểu} & \textbf{Nội dung}}
+Register File ↔ Main FSM & Xung và mức & \sig{start_pulse}, yêu cầu soft reset; ngược lại BUSY, xung done, xung error kèm mã, tín hiệu bận cho bộ đếm \\
+Register File → FSM, DMA, Array, VPU & Mức, ổn định suốt tác vụ & Bản chụp cấu hình (REG-11) \\
+Main FSM ↔ DMA & Lệnh khi DMA rảnh; done/error & Mã lệnh, abort; ngược lại bận, done, error \\
+DMA ↔ SRAM & valid/ready & Ghi 1 word mỗi lần (A, B, BIAS); đọc 1 word mỗi lần (C) \\
+Main FSM ↔ Array & Xung & \sig{pe_start}, \sig{pe_done} \\
+SRAM → Array & Trễ cố định 1, không ready & Vector A, vector B \\
+Array → VPU & Luồng hàng, không ready & Một hàng P giá trị INT32 kèm mask mỗi chu kỳ \\
+VPU ↔ SRAM & Trễ cố định 1 / ghi có mask & Đọc vector bias; ghi một đoạn hàng của C \\
+Main FSM → mọi module & Xung & \sig{soft_clr} \\
+\end{spectable}
+
+\subsection{Register File}\label{sec:5.1}
+
+\interfacecard{CPU ↔ Register File ↔ Main FSM}
+{CPU ghi cấu hình và lệnh, đọc trạng thái và bộ đếm. MMIO không chở dữ liệu ma trận.}
+{CPU là master trên AXI4-Lite; Register File chỉ trả lời. Register File phát \sig{start_pulse} và yêu cầu soft reset tới FSM; FSM báo kết quả ngược lại.}
+{Lệnh ghi có hiệu lực khi đã nhận đủ AW và W. START chỉ được nhận khi BUSY = 0.}
+{Ngay khi chấp nhận START, Register File chụp cấu hình và phát \sig{start_pulse}, trước khi trả phản hồi B.}
+
+\begin{reqtable}{AXI4-Lite slave}{tab:5-1}
+AXL-01 & Register File nhận AW và W theo thứ tự bất kỳ; lệnh ghi chỉ thực hiện khi đã có cả hai \\
+AXL-02 & Khi \sig{s_axi_bvalid} hoặc \sig{s_axi_rvalid} = 1, giữ nguyên tín hiệu đó và payload cho tới khi bắt tay xong \\
+AXL-03 & Tối đa một lệnh ghi và một lệnh đọc đang xử lý; điều tiết bằng tín hiệu ready \\
+AXL-04 & Luôn trả OKAY (\sig{bresp} = \sig{rresp} = 2'b00), kể cả với offset dự trữ \\
+AXL-05 & Chỉ giải mã bit địa chỉ [11:2]; bit [1:0] bị bỏ qua; wrapper chỉ định tuyến vùng 4 KiB tới accelerator \\
+AXL-06 & \sig{wstrb} áp dụng theo byte cho thanh ghi R/W: byte có strobe = 0 giữ giá trị cũ. Các bit lệnh của CTRL chỉ có tác dụng khi \sig{wstrb[0]} = 1 \\
+AXL-07 & Register File giữ cờ DONE, ERROR, \sig{ERR_CODE}: xóa khi chấp nhận START hoặc khi \sig{soft_clr}; đặt khi nhận xung done hoặc xung error từ FSM \\
+\end{reqtable}
+
+\subsection{Main FSM}\label{sec:5.2}
+
+\begin{reqtable}{Main FSM}{tab:5-2}
+FSM-01 & FSM là module duy nhất ra lệnh cho DMA và array. Mọi \sig{start_pulse} từ Register File coi như đã được chấp nhận \\
+FSM-02 & Chạy các pha theo bảng~\ref{tab:4-1}: kiểm tra REG-12 ở CHECK\_CFG; bỏ LOAD\_BIAS khi \sig{POST_EN} = 0; phát đúng một lệnh DMA cho mỗi pha LOAD\_* và STORE\_C; phát \sig{pe_start} đúng một lần sau LOAD\_B \\
+FSM-03 & FSM chỉ phát lệnh DMA khi DMA rảnh, và chỉ phát \sig{pe_start} khi array rảnh \\
+FSM-04 & FSM cung cấp BUSY ở mức tác vụ (không lấy từ trạng thái bận của DMA). Xung done và xung error không bao giờ cùng chu kỳ; mỗi tác vụ có tối đa một trong hai \\
+FSM-05 & Mã lỗi suy ra từ pha đang chạy: CHECK\_CFG → 1; LOAD\_* → 2; STORE\_C → 3 \\
+FSM-06 & FSM điều phối soft reset theo RST-05 … RST-09 \\
+\end{reqtable}
+
+\subsection{DMA engine}\label{sec:5.3}
+
+\interfacecard{Main FSM ↔ DMA ↔ DRAM / SRAM}
+{FSM gửi một lệnh: LOAD\_A, LOAD\_B, LOAD\_BIAS hoặc STORE\_C. DMA tự tính địa chỉ và số word từ bản chụp cấu hình, rồi báo done hoặc error.}
+{FSM khởi tạo lệnh. Sau đó DMA là master: phát burst trên AXI4-Full và gửi yêu cầu đọc/ghi tới SRAM (valid/ready).}
+{FSM chỉ ra lệnh khi DMA rảnh. Mỗi lệnh kết thúc bằng đúng một done hoặc một error.}
+{LOAD xong khi SRAM đã nhận word cuối. STORE\_C xong khi phản hồi B cuối là OKAY.}
+
+\begin{spectable}{L{0.14}L{0.22}L{0.3}L{0.34}}{Các lệnh DMA}{tab:5-3}{\textbf{Lệnh} & \textbf{Nguồn → đích} & \textbf{Số word} & \textbf{Địa chỉ DRAM của word thứ t}}
+LOAD\_A & DRAM → buffer A & M·K/4 & \sig{BASE_ADDR_IN} + 4t \\
+LOAD\_B & DRAM → buffer B & K·N/4 & \sig{BASE_ADDR_WEIGHT} + 4t \\
+LOAD\_BIAS & DRAM → buffer BIAS & N & \sig{BIAS_ADDR} + 4t \\
+STORE\_C & buffer C → DRAM & M·N (INT32) hoặc M·N/4 (INT8) & \sig{BASE_ADDR_OUT} + 4t \\
+\end{spectable}
+
+\begin{reqtable}{DMA và AXI4-Full}{tab:5-4}
+DMA-01 & Mỗi lệnh kết thúc bằng đúng một xung done hoặc error, không bao giờ cả hai; không có done/error khi không có lệnh. Lệnh có mã không dùng → error ngay, không truy cập bus hay SRAM \\
+DMA-02 & Địa chỉ DRAM tăng liên tục theo bảng~\ref{tab:5-3}; địa chỉ scratchpad theo SPM-02. DMA chép nguyên word, không đảo byte \\
+DMA-03 & Cắt burst: tại địa chỉ addr, số beat = min(số word còn lại, \sig{MAX_BURST_BEATS}, (4096 − addr mod 4096)/4). Burst không bao giờ vượt biên 4 KiB \\
+DMA-04 & \sig{arsize} = \sig{awsize} = 3'b010; \sig{arburst} = \sig{awburst} = 2'b01 (INCR); \sig{arlen}/\sig{awlen} = số beat − 1; \sig{wstrb} = 4'b1111; \sig{wlast} = 1 đúng ở beat cuối mỗi burst \\
+DMA-05 & VALID không phụ thuộc READY; khi VALID = 1, giữ VALID và payload tới khi bắt tay. \sig{wvalid} không chờ \sig{awready} \\
+DMA-06 & Tối đa 1 burst đọc outstanding (từ bắt tay AR tới beat có \sig{rlast}) và 1 burst ghi outstanding (từ AW hoặc beat W đầu tiên tới bắt tay B) \\
+DMA-07 & DMA được phép hạ \sig{rready} để tạo backpressure và được phép giữ \sig{bready} = 1 liên tục. DMA nhận đủ mọi beat R và phản hồi B của mọi burst đã phát, kể cả khi lỗi hoặc abort \\
+DMA-08 & Chỉ OKAY là thành công. DMA tự đếm beat; \sig{rlast} phải ở beat thứ \sig{arlen} + 1, lệch thì là lỗi đọc. \sig{rlast} đến sớm: burst coi như kết thúc; chưa có \sig{rlast} ở beat cuối kỳ vọng: nhận tiếp tới \sig{rlast} và bỏ beat thừa \\
+DMA-09 & Khi lỗi: ngừng phát burst mới, hoàn tất burst đang dở, rồi báo error. Dữ liệu của burst đọc bị lỗi có được ghi vào SRAM hay không là không quy định \\
+DMA-10 & Abort: không phát AR/AW mới, hoàn tất mọi burst đã bật VALID hoặc đã gửi beat W, rồi kết thúc lệnh bằng done hoặc error như thường \\
+\end{reqtable}
+
+\subsection{Local SRAM}\label{sec:5.4}
+
+\begin{reqtable}{Scratchpad}{tab:5-5}
+SPM-01 & Bốn buffer logic tách biệt: A (256 word), B (256 word), C (1024 word), BIAS (32 word) \\
+SPM-02 & Địa chỉ word, có đệm 2D: A \{i[4:0], kw[2:0]\}, kw = k » 2, byte lane = k[1:0]; B \{k[4:0], jw[2:0]\}, jw = j » 2; C dạng INT32 \{i[4:0], j[4:0]\}; C dạng INT8 \{i[4:0], jw[2:0]\}, byte lane = j[1:0]; BIAS \{j[4:0]\}. Bố cục này không phải bản sao tuyến tính của DRAM; DMA là nơi chuyển đổi \\
+SPM-03 & Vị trí ngoài vùng hợp lệ của tác vụ không bị ghi và có nội dung không xác định; array chỉ được đọc chúng cho các lane không hợp lệ \\
+SPM-04 & Phía array và VPU, trong cùng một chu kỳ, scratchpad phục vụ đồng thời: 1 lần đọc A (P byte từ P hàng khác nhau), 1 lần đọc B (P byte liền nhau), 1 lần đọc BIAS (P word liền nhau), 1 lần ghi C (một đoạn hàng P phần tử, có mask). Độ trễ đọc cố định 1 chu kỳ; không có backpressure. Cách chia bank vật lý để đạt yêu cầu này do spec module SRAM quy định \\
+SPM-05 & Phía DMA: nhận 1 word ghi mỗi chu kỳ và trả 1 word đọc mỗi chu kỳ, bắt tay valid/ready; mỗi yêu cầu đọc có đúng một dữ liệu trả về, theo thứ tự \\
+SPM-06 & \sig{rst_n} và soft reset không khởi tạo nội dung scratchpad \\
+\end{reqtable}
+
+\subsection{Systolic array}\label{sec:5.5}
+
+\interfacecard{SRAM ↔ Systolic array ↔ VPU}
+{Mỗi chu kỳ array đọc một cột của khối A và một hàng của khối B. Khi một tile xong, array xả kết quả theo hàng, mỗi chu kỳ một hàng P giá trị INT32 kèm mask, sang VPU.}
+{Array là master phía SRAM, tự lập lịch đọc. FSM chỉ phát \sig{pe_start} một lần cho mỗi tác vụ.}
+{Không có ready: SRAM phải phục vụ mọi yêu cầu, VPU phải nhận mọi hàng. Dữ liệu đọc về đúng 1 chu kỳ sau yêu cầu.}
+{Array phát \sig{pe_done} sau khi hàng cuối của tile cuối, đi qua VPU, đã được ghi vào buffer C.}
+
+\begin{reqtable}{Systolic array}{tab:5-6}
+ARR-01 & Array có P×P PE, P ∈ \{4, 8\}. Mỗi PE gồm bộ nhân INT8 × INT8, thanh ghi tích lũy INT32 \sig{acc} và thanh ghi kết quả INT32 \sig{res} \\
+ARR-02 & Output-Stationary: trong tile (i0, j0), PE(r, c) tích lũy C[i0+r][j0+c]; A đi theo hàng, B đi theo cột. Với mọi k, PE(r, c) nhân đúng A[i0+r][k] với B[k][j0+c]. Làm lệch (lane r của A trễ r chu kỳ, lane c của B trễ c chu kỳ) nằm trong array \\
+ARR-03 & Mỗi tile duyệt toàn bộ K trong một lượt; không có partial sum rời PE. Phần tử k = 0 mang cờ \sig{first}: PE nạp tích thay vì cộng dồn, nên không cần chu kỳ xóa \\
+ARR-04 & Phần tử k = K−1 mang cờ \sig{last}: PE chép giá trị tích lũy cuối vào \sig{res}. \sig{res} giữ nguyên tới lần \sig{last} kế tiếp, nên tile sau được tính trong lúc tile trước đang xả \\
+ARR-05 & Bộ tuần tự tile nằm trong array: lưới ⌈M/P⌉ × ⌈N/P⌉ tile, thứ tự duyệt tự do, mỗi tile tính đúng một lần. Tile kế tiếp bắt đầu sau max(K, P) chu kỳ \\
+ARR-06 & Xả: từ các thanh ghi \sig{res}, mỗi chu kỳ một hàng của tile (P giá trị INT32 + mask P bit) sang VPU \\
+ARR-07 & Tile biên: hàng r hợp lệ khi i0 + r < M, cột c hợp lệ khi j0 + c < N. Không xả hàng không hợp lệ; mask = 0 cho cột không hợp lệ. Mỗi C[i][j] hợp lệ được ghi đúng một lần; không vị trí nào khác bị ghi \\
+ARR-08 & Từ \sig{pe_start} đến \sig{pe_done} array không bao giờ phải chờ; \sig{pe_done} là xung 1 chu kỳ, mỗi \sig{pe_start} có đúng một \sig{pe_done}. Sau \sig{soft_clr}, array về rảnh ngay và không phát \sig{pe_done} cho lượt bị hủy \\
+\end{reqtable}
+
+\begin{notebox}[Nguyên lý PE]
+Mỗi chu kỳ, với cặp (a, b) hợp lệ: $sum = (first\ ?\ 0 : acc) + a\cdot b$; $acc \leftarrow sum$; nếu $last$ thì $res \leftarrow sum$. Giá trị a cùng cờ hợp lệ, $first$, $last$ đi sang PE bên phải; b đi xuống PE bên dưới; mỗi bước trễ 1 chu kỳ. Khoảng cách tile max(K, P) bảo đảm \sig{res} của một hàng đã được xả trước khi tile kế tiếp ghi đè.
+\end{notebox}
+
+\subsection{VPU}\label{sec:5.6}
+
+\begin{reqtable}{VPU}{tab:5-7}
+VPU-01 & VPU nằm giữa đường xả của array và cổng ghi buffer C. Nó có P lane, nhận một hàng mỗi chu kỳ, không có backpressure và có độ trễ cố định \sig{L_VPU} chu kỳ (hằng số của thiết kế) \\
+VPU-02 & \sig{POST_EN} = 0: đầu ra bằng đầu vào (INT32), ghi vào C theo bố cục INT32 \\
+VPU-03 & \sig{POST_EN} = 1: lane c của hàng i tính FUN-03 với bias[j0 + c], $M_0$, $sh$, \sig{RELU_EN} của bản chụp cấu hình; ghi Y vào C theo bố cục INT8, mask theo byte \\
+VPU-04 & VPU đọc bias từ buffer BIAS, P word mỗi chu kỳ, cùng nhịp với hàng đang xử lý \\
+VPU-05 & VPU không truy cập DRAM và không giữ trạng thái giữa các tác vụ \\
+\end{reqtable}

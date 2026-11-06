@@ -1,0 +1,117 @@
+% Mục 4 — Luồng vận hành
+\section{Luồng vận hành}\label{sec:4}
+
+\begin{keypoint}
+Một tác vụ chạy các pha theo thứ tự CHECK\_CFG → LOAD\_BIAS (nếu bật hậu xử lý) → LOAD\_A → LOAD\_B → COMPUTE → STORE\_C. Mỗi lúc chỉ một pha chạy, và mỗi pha có đúng một khối làm chính. Pha sau chỉ bắt đầu khi pha trước thành công.
+\end{keypoint}
+
+\subsection{Các pha của một tác vụ}\label{sec:4.1}
+
+\begin{spectable}{L{0.14}L{0.13}L{0.53}L{0.2}}{Các pha}{tab:4-1}{\textbf{Pha} & \textbf{Khối chính} & \textbf{Làm gì} & \textbf{Xong khi}}
+CHECK\_CFG & Main FSM & Kiểm tra bản chụp cấu hình theo REG-12; sai thì báo lỗi mã 1, không truy cập bus hay scratchpad & Kiểm tra xong \\
+LOAD\_BIAS & DMA & Chép N word bias từ DRAM vào buffer BIAS. Chỉ có khi \sig{POST_EN} = 1 & SRAM nhận word cuối \\
+LOAD\_A & DMA & Chép A (M hàng × K/4 word) vào buffer A & SRAM nhận word cuối \\
+LOAD\_B & DMA & Chép B (K hàng × N/4 word) vào buffer B & SRAM nhận word cuối \\
+COMPUTE & Array, VPU & Array tính mọi tile; mỗi hàng kết quả đi qua VPU (hậu xử lý hoặc đi thẳng) rồi ghi vào buffer C & \sig{pe_done} \\
+STORE\_C & DMA & Chép C (M·N word) hoặc Y (M·N/4 word) từ buffer C ra DRAM & Phản hồi B cuối là OKAY \\
+\end{spectable}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,
+  st/.style={blk,minimum width=1.75cm,minimum height=0.85cm,font=\scriptsize\bfseries},
+  stn/.style={blkn,minimum width=1.75cm,minimum height=0.85cm,font=\scriptsize\bfseries}]
+\node[st] (idle) at (0,0) {IDLE};
+\node[st] (check) at (2.7,0) {CHECK\_CFG};
+\node[stn] (bias) at (5.4,0) {LOAD\_BIAS};
+\node[st] (la) at (8.1,0) {LOAD\_A};
+\node[st] (lb) at (10.8,0) {LOAD\_B};
+\node[st] (comp) at (13.5,0) {COMPUTE};
+\node[st] (store) at (13.5,-2.2) {STORE\_C};
+\node[st] (abort) at (6.75,-2.2) {ABORT};
+\draw[ctl] (idle) -- node[lbl,above,fill=white]{START} (check);
+\draw[ctl] (check) -- node[lbl,above,fill=white]{POST\_EN} node[lbl,below,fill=white]{=1} (bias);
+\draw[ctl] (check.north east) .. controls +(0.8,0.9) and +(-0.8,0.9) .. node[lbl,above,fill=white]{POST\_EN = 0} (la.north west);
+\draw[ctl] (bias) -- (la);
+\draw[ctl] (la) -- (lb);
+\draw[ctl] (lb) -- (comp);
+\draw[ctl] (comp) -- node[lbl,right,fill=white]{pe\_done} (store);
+\draw[ctl] (store.south) -- ++(0,-0.7) -| node[lbl,below,fill=white,pos=0.25]{B cuối OKAY / done\_flag} (idle.south);
+\draw[ctl,dashed] (idle.north) .. controls +(0,1.6) and +(0,1.6) .. node[lbl,above,fill=white,pos=0.5]{lỗi ở bất kỳ pha nào / error\_flag, err\_code} (comp.north);
+\draw[ctl,dotted] (la.south) -- node[lbl,right,fill=white,pos=0.5]{soft reset khi DMA đang chạy} (abort.north east);
+\draw[ctl,dotted] (abort.west) -- node[lbl,below,fill=white,pos=0.4]{DMA xong / soft\_clr} (idle.south east);
+\end{tikzpicture}
+\caption{Thứ tự pha của Main FSM (minh họa). Đường lỗi và đường soft reset chỉ vẽ một mũi tên đại diện. Tên trạng thái và cách mã hóa do người hiện thực chọn; chỉ hành vi nhìn thấy từ bên ngoài là quy định}\label{fig:4-1}
+\end{figure}
+
+\subsection{Luồng một tác vụ}\label{sec:4.2}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\foreach \n/\x/\t in {cpu/0/CPU,rf/2.75/Register File,ctl/5.5/Main FSM,dma/8.25/DMA,sa/11.0/SRAM · Array · VPU,dr/13.75/DRAM}{
+  \node[blkc,minimum width=2.3cm,minimum height=0.6cm,font=\scriptsize\bfseries] (h\n) at (\x,0) {\t};
+  \draw[muted,dashed] (\x,-0.3) -- (\x,-10.3);}
+\newcommand{\seqmsg}[5][ctl]{\draw[#1] (#2,#4) -- node[lbl,above,fill=white,inner sep=1pt]{#5} (#3,#4);}
+\seqmsg[dat]{0}{13.75}{-0.75}{1 · ghi A, B, bias vào DRAM (lệnh store thường)}
+\seqmsg{0}{2.75}{-1.3}{2 · cấu hình}
+\seqmsg{0}{2.75}{-1.85}{3 · fence; START}
+\seqmsg{2.75}{5.5}{-2.4}{4 · start\_pulse, chụp cấu hình}
+\node[blk,font=\scriptsize,inner sep=2pt,fill=white] at (5.5,-2.95) {5 · CHECK\_CFG};
+\draw[brandline,rounded corners=2pt] (4.6,-3.3) rectangle (14.6,-5.65);
+\node[anchor=north east,font=\scriptsize\bfseries,text=brand,fill=white,inner sep=1pt] at (14.55,-3.35) {lặp: LOAD\_BIAS, LOAD\_A, LOAD\_B};
+\seqmsg{5.5}{8.25}{-3.85}{6 · i\_dma\_start, i\_dma\_cmd}
+\seqmsg[dat]{13.75}{8.25}{-4.4}{7 · burst R}
+\seqmsg[dat]{8.25}{11.0}{-4.95}{8 · ghi buffer}
+\seqmsg{8.25}{5.5}{-5.45}{9 · o\_done}
+\seqmsg{5.5}{11.0}{-6.1}{10 · pe\_start}
+\node[blkd,font=\scriptsize,inner sep=2pt,align=center] at (11.0,-6.85) {11 · tính các tile, xả từng hàng\\qua VPU vào buffer C};
+\seqmsg{11.0}{5.5}{-7.6}{12 · pe\_done}
+\seqmsg{5.5}{8.25}{-8.15}{13 · STORE\_C}
+\seqmsg[dat]{8.25}{13.75}{-8.7}{14 · đọc buffer C → AW/W burst; B = OKAY}
+\seqmsg{8.25}{5.5}{-9.2}{15 · o\_done}
+\seqmsg{5.5}{2.75}{-9.7}{16 · done\_flag}
+\seqmsg{0}{2.75}{-10.2}{17 · polling STATUS → DONE = 1}
+\end{tikzpicture}
+\caption{Luồng một tác vụ (trường hợp thành công)}\label{fig:4-2}
+\end{figure}
+
+Có ba mức “xong”: \sig{o_done} của DMA báo xong một lệnh DMA; \sig{pe_done} báo toàn bộ kết quả đã nằm trong buffer C; STATUS.DONE báo toàn bộ kết quả đã nằm trong DRAM. Chỉ mức cuối cùng hiện ra cho CPU.
+
+\subsection{Quyền truy cập scratchpad theo pha}\label{sec:4.3}
+
+\begin{spectable}{L{0.18}L{0.2}L{0.2}L{0.2}L{0.22}}{Ai truy cập buffer trong mỗi pha}{tab:4-2}{\textbf{Pha} & \textbf{A} & \textbf{B} & \textbf{BIAS} & \textbf{C}}
+IDLE, CHECK\_CFG & — & — & — & — \\
+LOAD\_BIAS & — & — & DMA ghi & — \\
+LOAD\_A & DMA ghi & — & — & — \\
+LOAD\_B & — & DMA ghi & — & — \\
+COMPUTE & Array đọc & Array đọc & VPU đọc & VPU ghi \\
+STORE\_C & — & — & — & DMA đọc \\
+\end{spectable}
+
+\begin{reqtable}{Quyền truy cập}{tab:4-3}
+OWN-01 & Mỗi buffer chỉ có tối đa một bên truy cập trong mỗi pha, theo bảng~\ref{tab:4-2}. Main FSM bảo đảm điều này bằng cách chạy tuần tự các pha. Vì vậy mỗi bank vật lý chỉ cần SRAM một cổng \\
+OWN-02 & Module SRAM có assertion (mô phỏng) phát hiện truy cập sai bên trong một pha \\
+\end{reqtable}
+
+\subsection{Xử lý lỗi}\label{sec:4.4}
+
+\begin{reqtable}{Lỗi}{tab:4-4}
+ERR-01 & Cấu hình sai: CHECK\_CFG kết thúc tác vụ với \sig{ERR_CODE} = 1; không có giao dịch AXI nào, không truy cập scratchpad \\
+ERR-02 & Lỗi AXI trong một lệnh DMA: DMA ngừng phát burst mới, nhận đủ beat R hoặc phản hồi B của burst đã phát, rồi báo \sig{o_error}. Main FSM kết thúc tác vụ với \sig{ERR_CODE} = 2 (LOAD\_*) hoặc 3 (STORE\_C) và không phát lệnh nào nữa \\
+ERR-03 & Array và VPU không có đầu ra lỗi \\
+\end{reqtable}
+
+\subsection{Reset và soft reset}\label{sec:4.5}
+
+\begin{reqtable}{Reset}{tab:4-5}
+RST-01 & \sig{rst_n} tích cực mức thấp, bất đồng bộ. \sig{gemm_accel_top} có bộ đồng bộ 2 flip-flop (bật bất đồng bộ, nhả đồng bộ với \sig{clk}); đầu ra \sig{rst_n_sync} cấp cho mọi module \\
+RST-02 & \sig{rst_n_sync} = 0 đưa mọi trạng thái về giá trị reset. Nội dung scratchpad không bị xóa, coi là không xác định \\
+RST-03 & Soft reset không đi vào chân reset; nó là xung xóa đồng bộ \sig{soft_clr} một chu kỳ do Main FSM phát tới Register File, DMA, SRAM, Array, VPU \\
+RST-04 & Phạm vi soft reset: FSM, DMA, Array, VPU, phần điều khiển SRAM; STATUS và \sig{PERF_*}. Thanh ghi R/W giữ nguyên. Nội dung scratchpad không xác định \\
+RST-05 & Nếu DMA đang chạy lệnh: FSM bật \sig{i_dma_abort}; DMA không phát burst mới, hoàn tất mọi burst đã cam kết (đã bật VALID hoặc đã gửi beat W), rồi kết thúc lệnh bằng \sig{o_done} hoặc \sig{o_error}. Sau đó FSM phát \sig{soft_clr} \\
+RST-06 & Nếu DMA không chạy lệnh (IDLE, CHECK\_CFG, COMPUTE): FSM phát \sig{soft_clr} ở chu kỳ kế tiếp; COMPUTE đang chạy bị hủy \\
+RST-07 & Trong cả chuỗi soft reset: BUSY = 1; START và SOFT\_RESET ghi lặp lại bị bỏ qua \\
+RST-08 & Sau \sig{soft_clr}: STATUS = 0; tác vụ bị hủy không báo DONE cũng không báo ERROR; vùng đích trong DRAM không xác định \\
+RST-09 & Nếu yêu cầu soft reset đến đúng chu kỳ DMA kết thúc lệnh, coi như DMA đã rảnh và áp dụng RST-06. Khi đã có yêu cầu soft reset, FSM không phát lệnh mới \\
+\end{reqtable}

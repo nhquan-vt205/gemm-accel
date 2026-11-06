@@ -1,0 +1,33 @@
+# ---- mô phỏng ----
+src/sim/out/
+work/
+transcript
+*.wlf
+*.vcd
+*.fst
+*.ucdb
+modelsim.ini
+obj_dir/
+# ---- Vivado ----
+syn/out/
+.Xil/
+*.jou
+vivado*.log
+*.str
+usage_statistics_webtalk.*
+# ---- LaTeX (giữ PDF, bỏ file trung gian) ----
+*.aux
+*.fls
+*.fdb_latexmk
+*.xdv
+*.toc
+*.out
+*.synctex.gz
+docs/**/latex/*.log
+docs/**/latex/main.pdf
+# ---- Python, hệ điều hành, editor ----
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+*.swp

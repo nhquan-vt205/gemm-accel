@@ -1,0 +1,73 @@
+% Mục 2 — Chức năng và dữ liệu
+\section{Chức năng và dữ liệu}\label{sec:2}
+
+\begin{keypoint}
+Mỗi tác vụ tính C = A × B trên INT8, tích lũy INT32. Khi \sig{POST_EN} = 0, C (INT32) được ghi ra DRAM. Khi \sig{POST_EN} = 1, VPU biến C thành Y = kẹp(ReLU(requantize(C + bias))) ở INT8 và Y được ghi ra DRAM. Mọi phép tính là số nguyên và kết quả phải khớp từng bit với mô hình tham chiếu ở mục~\ref{sec:2.4}.
+\end{keypoint}
+
+\subsection{Phép toán}\label{sec:2.1}
+
+\begin{reqtable}{Phép toán}{tab:2-1}
+FUN-01 & $C[i][j] = \sum_{k=0}^{K-1} A[i][k]\cdot B[k][j]$, với 0 ≤ i < M, 0 ≤ j < N \\
+FUN-02 & A, B là INT8 bù 2. C và bias là INT32 bù 2. Y là INT8 bù 2. Tích INT8 × INT8 tính đủ 16 bit có dấu; cộng dồn trên INT32, wrap mod $2^{32}$ nếu tràn \\
+FUN-03 & Khi \sig{POST_EN} = 1, với mỗi phần tử: \newline
+\hspace*{1em}$acc = C[i][j] + bias[j]$ \hfill (INT32, wrap mod $2^{32}$) \newline
+\hspace*{1em}$prod = acc \cdot M_0$ \hfill (tích có dấu 64 bit) \newline
+\hspace*{1em}$y = (prod + 2^{30+sh}) \gg (31+sh)$ \hfill (dịch số học, 64 bit) \newline
+\hspace*{1em}nếu \sig{RELU_EN} = 1: $y = \max(y, 0)$ \newline
+\hspace*{1em}$Y[i][j] = \min(\max(y, -128), 127)$ \\
+FUN-04 & $M_0$ (\sig{QUANT_M0}) là INT32 có dấu, mọi giá trị đều hợp lệ. $sh$ (\sig{QUANT_SHIFT}) là số không dấu 0 … 31. Một cặp ($M_0$, $sh$) dùng cho cả tác vụ. bias là vector N phần tử INT32, cộng theo cột \\
+FUN-05 & Kết quả ghi đè vùng đích trong DRAM; accelerator không đọc giá trị cũ của vùng đích \\
+FUN-06 & Ngoài FUN-01 và FUN-03 không có phép toán nào khác (không có C += A × B, softmax, pooling) \\
+FUN-07 & Kết quả không phụ thuộc P: P = 4 và P = 8 cho nội dung DRAM giống hệt từng bit \\
+\end{reqtable}
+
+\begin{notebox}[Hệ quả]
+$|a\cdot b| ≤ 2^{14}$ và K ≤ 32 nên $|C| ≤ 2^{19}$: C không bao giờ tràn. $|prod| ≤ 2^{62}$ và $2^{30+sh} ≤ 2^{61}$ nên phép tính 64 bit của FUN-03 không bao giờ tràn. Làm tròn là nửa lên (về phía +∞). Phần mềm nên chọn $M_0$ trong $[2^{30}, 2^{31})$ để giữ độ chính xác.
+\end{notebox}
+
+\subsection{Kích thước ma trận}\label{sec:2.2}
+
+\begin{spectable}{L{0.12}L{0.45}L{0.43}}{Bố cục \sigc{MATRIX_DIM}}{tab:2-2}{\textbf{Bit} & \textbf{Trường} & \textbf{Miền hợp lệ}}
+{}[7:0] & M (số hàng A và C) & 1 … 32 \\
+{}[15:8] & N (số cột B và C) & 4, 8, …, 32 (bội của 4) \\
+{}[23:16] & K (số cột A = số hàng B) & 4, 8, …, 32 (bội của 4) \\
+{}[31:24] & Dự trữ & phải = 0 \\
+\end{spectable}
+
+Ma trận có N hoặc K không chia hết cho 4 phải được phần mềm đệm 0 lên bội của 4; cột thừa của kết quả bị phần mềm bỏ qua. Toàn bộ A, B, bias và C của một tác vụ nằm trong scratchpad suốt tác vụ.
+
+\subsection{Bố trí dữ liệu trong DRAM}\label{sec:2.3}
+
+\begin{spectable}{L{0.14}L{0.46}L{0.4}}{Địa chỉ byte của phần tử}{tab:2-3}{\textbf{Ma trận} & \textbf{Địa chỉ} & \textbf{Kích thước vùng}}
+A & \sig{BASE_ADDR_IN} + i·K + k & M·K byte \\
+B & \sig{BASE_ADDR_WEIGHT} + k·N + j & K·N byte \\
+bias & \sig{BIAS_ADDR} + 4j & 4·N byte \\
+C (INT32) & \sig{BASE_ADDR_OUT} + 4·(i·N + j) & 4·M·N byte \\
+Y (INT8) & \sig{BASE_ADDR_OUT} + i·N + j & M·N byte \\
+\end{spectable}
+
+\begin{reqtable}{Bố trí dữ liệu}{tab:2-4}
+DAT-01 & Row-major, các hàng nằm liền nhau, không có stride, theo bảng~\ref{tab:2-3} \\
+DAT-02 & Little-endian: byte tại địa chỉ a nằm ở bit [8·(a mod 4)+7 : 8·(a mod 4)] của word 32 bit; INT32 là little-endian \\
+DAT-03 & Mọi địa chỉ cơ sở căn 4 byte. Vì N, K là bội của 4, mọi hàng bắt đầu và kết thúc đúng biên word, nên \sig{m_axi_wstrb} luôn bằng 4'b1111 \\
+DAT-04 & Vùng đích không được chồng lên vùng A, B hoặc bias; A, B, bias được phép chồng nhau. Vi phạm → kết quả không xác định. Phần cứng không kiểm tra \\
+DAT-05 & Phần cứng không kiểm tra vùng nhớ có nằm trong DRAM không; bus trả lỗi thì tác vụ kết thúc với ERROR (mục~\ref{sec:4.4}) \\
+\end{reqtable}
+
+\subsection{Mô hình tham chiếu}\label{sec:2.4}
+
+\begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
+import numpy as np
+
+def gemm(A, B):                      # A: int8 MxK, B: int8 KxN
+    return (A.astype(np.int64) @ B.astype(np.int64)).astype(np.int32)
+
+def post(C, bias, M0, sh, relu):     # C: int32 MxN, bias: int32 N
+    acc  = (C.astype(np.int64) + bias).astype(np.int32).astype(np.int64)
+    prod = acc * np.int64(M0)
+    y    = (prod + (np.int64(1) << (30 + sh))) >> (31 + sh)
+    if relu:
+        y = np.maximum(y, 0)
+    return np.clip(y, -128, 127).astype(np.int8)
+\end{Verbatim}

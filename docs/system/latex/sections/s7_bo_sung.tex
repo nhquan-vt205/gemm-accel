@@ -1,0 +1,145 @@
+% Mục 7 — Thành phần bổ sung (nếu còn thời gian)
+\section{Thành phần bổ sung}\label{sec:7}
+
+\begin{keypoint}
+Hai thành phần dưới đây chỉ làm nếu còn thời gian: \textbf{DMA theo chuỗi descriptor} (CPU ra lệnh một lần cho nhiều phép GEMM) và \textbf{scratchpad ping-pong} (nạp, tính, ghi của các phép GEMM kế nhau chạy chồng lên nhau). Chúng đã được đặc tả đầy đủ ở đây và dùng các offset, bit đã dành sẵn, nên khi hiện thực không phải sửa các mục 1 – 6.
+\end{keypoint}
+
+\subsection{Nguyên tắc chung}\label{sec:7.1}
+
+\begin{reqtable}{Nguyên tắc của phần bổ sung}{tab:7-1}
+BS-01 & Không thêm, bớt hay đổi port top-level (mục~\ref{sec:6}); không đổi offset hay bit đã định nghĩa ở bảng~\ref{tab:3-1}. Chỉ dùng CTRL[2], STATUS[3], các offset 0x40 … 0x48 và bit \sig{HW_CONFIG[17:16]} \\
+BS-02 & Bật bằng tham số \sig{HAS_CHAIN}, \sig{HAS_PINGPONG}; phần cứng báo qua \sig{HW_CONFIG}. Firmware phải đọc \sig{HW_CONFIG} trước khi dùng phần bổ sung \\
+BS-03 & Tác vụ START (chế độ đơn) giữ nguyên mọi hành vi của mục 1 – 6, dù phần bổ sung có hay không \\
+BS-04 & Phần bổ sung chỉ thay đổi port nội bộ: DMA tách thành kênh đọc và kênh ghi chạy độc lập, thêm lệnh FETCH; các cổng SRAM thêm bit chọn bank; FSM thêm bộ lập lịch và hàng đợi descriptor \\
+\end{reqtable}
+
+\subsection{DMA theo chuỗi descriptor}\label{sec:7.2}
+
+CPU dựng sẵn một danh sách descriptor trong DRAM, mỗi descriptor mô tả một phép GEMM. CPU ghi địa chỉ descriptor đầu vào \sig{DESC_PTR}, thực hiện \sig{fence rw,rw}, ghi CTRL[2] = 1 (START\_CHAIN), rồi chờ DONE một lần cho cả chuỗi. Accelerator tự đọc từng descriptor và chạy hết chuỗi.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\node[blk,minimum width=2.2cm,minimum height=0.8cm] (ptr) at (0,0) {\sig{DESC_PTR}\\[-2pt]\scriptsize thanh ghi};
+\foreach \i/\x/\t in {0/3.6/lớp 1,1/8.0/lớp 2,2/12.4/lớp 3}{
+  \node[blkd,minimum width=3.4cm,minimum height=2.0cm,anchor=west] (d\i) at (\x-1.7,0) {};
+  \node[font=\small\bfseries,text=data,anchor=north] at (\x,0.95) {descriptor \i};
+  \node[font=\scriptsize,anchor=north,align=center] at (\x,0.5) {\t\\M, N, K · địa chỉ\\stride · cờ · tham số VPU};
+  \node[blk,minimum width=3.4cm,minimum height=0.45cm,font=\scriptsize,anchor=south west,inner sep=1pt] (n\i) at (\x-1.7,-1.0) {};}
+\node[font=\scriptsize] at (3.6,-0.78) {\sig{NEXT_PTR}};
+\node[font=\scriptsize] at (8.0,-0.78) {\sig{NEXT_PTR}};
+\node[font=\scriptsize] at (12.4,-0.78) {\sig{LAST} = 1};
+\draw[ctl] (ptr.east) -- (d0.west);
+\draw[ctl] (n0.east) -- ++(0.5,0) |- ([yshift=8pt]d1.west);
+\draw[ctl] (n1.east) -- ++(0.5,0) |- ([yshift=8pt]d2.west);
+\end{tikzpicture}
+\caption{Chuỗi descriptor: một lệnh START\_CHAIN chạy ba phép GEMM liên tiếp}\label{fig:7-1}
+\end{figure}
+
+\begin{spectable}{L{0.1}L{0.08}L{0.17}L{0.12}L{0.53}}{Bố cục descriptor (16 word, 64 byte)}{tab:7-2}{\textbf{Offset} & \textbf{Word} & \textbf{Tên} & \textbf{Bit} & \textbf{Nội dung}}
+0x00 & 0 & \sig{DIM} & [31:0] & M, N, K, bố cục như \sig{MATRIX_DIM} \\
+0x04 & 1 & \sig{A_ADDR} & [31:0] & Địa chỉ byte của A[0][0] \\
+0x08 & 2 & \sig{B_ADDR} & [31:0] & Địa chỉ byte của B[0][0]; bỏ qua khi \sig{REUSE_B} = 1 \\
+0x0C & 3 & \sig{C_ADDR} & [31:0] & Địa chỉ byte của C[0][0] hoặc Y[0][0] \\
+0x10 & 4 & \sig{LDA}, \sig{LDB} & [15:0], [31:16] & Stride theo hàng của A và B (byte); 0 = các hàng liền nhau \\
+0x14 & 5 & \sig{LDC} & [15:0] & Stride của C hoặc Y (byte); 0 = liền nhau; [31:16] dự trữ \\
+0x18 & 6 & \sig{FLAGS} & [4:0] & [0] \sig{LAST}, [1] \sig{WAIT_PREV}, [2] \sig{REUSE_B}, [3] \sig{POST_EN}, [4] \sig{RELU_EN}; [31:5] dự trữ \\
+0x1C & 7 & \sig{NEXT_PTR} & [31:0] & Địa chỉ descriptor kế tiếp, căn 64 byte; bỏ qua khi \sig{LAST} = 1 \\
+0x20 & 8 & \sig{BIAS_ADDR} & [31:0] & Như thanh ghi \sig{BIAS_ADDR}; chỉ dùng khi \sig{POST_EN} = 1 \\
+0x24 & 9 & \sig{QM0} & [31:0] & Như \sig{QUANT_M0}; chỉ dùng khi \sig{POST_EN} = 1 \\
+0x28 & 10 & \sig{QSHIFT} & [4:0] & Như \sig{QUANT_SHIFT}; [31:5] dự trữ \\
+0x2C & 11 & \sig{TAG} & [31:0] & Tùy phần mềm; phần cứng không đọc \\
+0x30–0x3C & 12–15 & — & — & Dự trữ, phải bằng 0 \\
+\end{spectable}
+
+Với stride, địa chỉ phần tử là: A[i][k] tại \sig{A_ADDR} + i·\sig{LDA} + k; B[k][j] tại \sig{B_ADDR} + k·\sig{LDB} + j; C[i][j] tại \sig{C_ADDR} + i·\sig{LDC} + 4j; Y[i][j] tại \sig{C_ADDR} + i·\sig{LDC} + j. Stride = 0 được hiểu là đúng độ dài hàng.
+
+\begin{reqtable}{Chế độ chuỗi}{tab:7-3}
+DSC-01 & \sig{DESC_PTR} và mọi \sig{NEXT_PTR} được dùng phải căn 64 byte; nếu không, \sig{ERR_CODE} = 1. Mỗi descriptor được đọc đúng một lần, theo thứ tự chuỗi, bằng một burst INCR 16 beat (lệnh DMA FETCH) \\
+DSC-02 & Mỗi descriptor chạy các pha FETCH → kiểm tra → LOAD\_BIAS (nếu \sig{POST_EN}) → LOAD\_A → LOAD\_B (trừ khi \sig{REUSE_B}) → COMPUTE → STORE\_C, với nội dung giống hệt một tác vụ chế độ đơn có cùng tham số \\
+DSC-03 & Descriptor hợp lệ khi: M, N, K đúng miền; \sig{DIM[31:24]} = 0; mọi địa chỉ được dùng căn 4 byte; mỗi stride bằng 0 hoặc ≥ độ dài hàng (K cho A; N cho B; 4N cho C; N cho Y) và là bội của 4; bit và word dự trữ bằng 0; \sig{RELU_EN} kéo theo \sig{POST_EN}; \sig{REUSE_B} chỉ khi không phải descriptor đầu và K, N bằng của descriptor trước. Sai → \sig{ERR_CODE} = 1 \\
+DSC-04 & \sig{REUSE_B} = 1: không nạp B; COMPUTE dùng B của descriptor ngay trước \\
+DSC-05 & \sig{WAIT_PREV} = 1: các pha LOAD của descriptor chỉ bắt đầu khi STORE\_C của mọi descriptor trước nó đã xong. Phần mềm phải đặt cờ này khi descriptor đọc dữ liệu do descriptor trước ghi ra \\
+DSC-06 & Chuỗi kết thúc ở descriptor đầu tiên có \sig{LAST} = 1. DONE = 1 khi STORE\_C của descriptor đó nhận phản hồi B cuối là OKAY \\
+DSC-07 & \sig{DESC_DONE_CNT} tăng 1 mỗi khi STORE\_C của một descriptor xong OKAY; các descriptor xong đúng theo thứ tự chuỗi \\
+DSC-08 & Lỗi: gọi f là descriptor có thứ tự nhỏ nhất bị lỗi. Không pha nào của descriptor thứ ≥ f được bắt đầu; các descriptor đứng trước f được chạy xong. Khi mọi khối đã rảnh: ERROR = 1, \sig{ERR_CODE} theo bảng~\ref{tab:3-2} (lỗi khi FETCH là mã 4), \sig{ERR_DESC_ADDR} = địa chỉ của f, \sig{DESC_DONE_CNT} = số thứ tự của f \\
+DSC-09 & Khi dùng stride lớn hơn độ dài hàng, DMA cắt burst theo từng hàng: burst không bao giờ trải qua khoảng hở giữa hai hàng, và các byte trong khoảng hở không bị đọc hay ghi \\
+DSC-10 & Accelerator không ghi vào descriptor; phần mềm không sửa descriptor và vùng dữ liệu của chuỗi đang chạy. Vùng đích của mọi descriptor không được chồng lên vùng descriptor \\
+DSC-11 & Ở chế độ chuỗi, tham số VPU lấy từ descriptor; các thanh ghi \sig{MATRIX_DIM}, \sig{BASE_ADDR_*}, \sig{POST_CTRL}, \sig{BIAS_ADDR}, \sig{QUANT_*} không được dùng \\
+\end{reqtable}
+
+\subsection{Scratchpad ping-pong}\label{sec:7.3}
+
+Mỗi buffer A, B, C, BIAS có hai bank. DMA kênh đọc nạp descriptor d+1 vào một bank trong lúc array tính descriptor d trên bank kia, và DMA kênh ghi chép kết quả của descriptor d−1 ra DRAM. Thời gian mỗi descriptor tiến tới max(nạp, tính, ghi) thay vì tổng của chúng. Phần này đòi hỏi chế độ chuỗi.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1.33cm,y=1cm,
+  op/.style={draw=white,line width=0.6pt,font=\scriptsize\bfseries,text=white,inner sep=0pt,anchor=south west},
+  fe/.style={op,fill=brand!55},
+  ld/.style={op,fill=data},
+  cp/.style={op,fill=brand},
+  sto/.style={op,fill=data!55}]
+\newcommand{\gbar}[5]{\node[#1,minimum width={(#3-#2)*1.33cm},minimum height=0.5cm] at (#2,#4) {#5};}
+\node[anchor=west,font=\small\bfseries,text=brand] at (-1.2,4.25) {(a) Không ping-pong: tuần tự};
+\node[anchor=east,font=\scriptsize] at (0,3.4) {Đọc};
+\node[anchor=east,font=\scriptsize] at (0,2.8) {Tính};
+\node[anchor=east,font=\scriptsize] at (0,2.2) {Ghi};
+\gbar{fe}{0}{0.3}{3.15}{}
+\gbar{ld}{0.3}{1.9}{3.15}{L0}
+\gbar{cp}{1.9}{3.7}{2.55}{C0}
+\gbar{sto}{3.7}{4.7}{1.95}{S0}
+\gbar{fe}{4.7}{5.0}{3.15}{}
+\gbar{ld}{5.0}{6.6}{3.15}{L1}
+\gbar{cp}{6.6}{8.4}{2.55}{C1}
+\gbar{sto}{8.4}{9.4}{1.95}{S1}
+\draw[muted,->] (0,1.75) -- (11.2,1.75) node[right,font=\scriptsize]{t};
+\node[anchor=west,font=\small\bfseries,text=brand] at (-1.2,1.0) {(b) Ping-pong: chạy chồng};
+\node[anchor=east,font=\scriptsize] at (0,0.15) {Đọc};
+\node[anchor=east,font=\scriptsize] at (0,-0.45) {Tính};
+\node[anchor=east,font=\scriptsize] at (0,-1.05) {Ghi};
+\gbar{fe}{0}{0.3}{-0.1}{}
+\gbar{ld}{0.3}{1.9}{-0.1}{L0·b0}
+\gbar{fe}{1.9}{2.2}{-0.1}{}
+\gbar{ld}{2.2}{3.8}{-0.1}{L1·b1}
+\gbar{fe}{3.8}{4.1}{-0.1}{}
+\gbar{ld}{4.1}{5.7}{-0.1}{L2·b0}
+\gbar{fe}{5.7}{6.0}{-0.1}{}
+\gbar{ld}{6.0}{7.6}{-0.1}{L3·b1}
+\gbar{cp}{1.9}{3.7}{-0.7}{C0·b0}
+\gbar{cp}{3.8}{5.6}{-0.7}{C1·b1}
+\gbar{cp}{5.7}{7.5}{-0.7}{C2·b0}
+\gbar{cp}{7.6}{9.4}{-0.7}{C3·b1}
+\gbar{sto}{3.7}{4.7}{-1.3}{S0}
+\gbar{sto}{5.6}{6.6}{-1.3}{S1}
+\gbar{sto}{7.5}{8.5}{-1.3}{S2}
+\gbar{sto}{9.4}{10.4}{-1.3}{S3}
+\draw[muted,->] (0,-1.5) -- (11.2,-1.5) node[right,font=\scriptsize]{t};
+\node[font=\scriptsize,text=muted,anchor=north west,align=left] at (4.3,-1.65) {L2 vào bank 0 chỉ sau khi C0 xong (PP-03); C2 chỉ sau khi S0 xong (PP-04)};
+\node[fe,minimum width=0.4cm,minimum height=0.25cm] at (0.2,-2.45) {}; \node[anchor=west,font=\scriptsize] at (0.55,-2.33) {FETCH};
+\node[ld,minimum width=0.4cm,minimum height=0.25cm] at (1.8,-2.45) {}; \node[anchor=west,font=\scriptsize] at (2.15,-2.33) {LOAD};
+\node[cp,minimum width=0.4cm,minimum height=0.25cm] at (3.4,-2.45) {}; \node[anchor=west,font=\scriptsize] at (3.75,-2.33) {COMPUTE};
+\node[sto,minimum width=0.4cm,minimum height=0.25cm] at (5.4,-2.45) {}; \node[anchor=west,font=\scriptsize] at (5.75,-2.33) {STORE\_C};
+\end{tikzpicture}
+\caption{Lịch chạy minh họa với thời lượng giả định (đơn vị tùy ý). “·b0”: bank được dùng}\label{fig:7-2}
+\end{figure}
+
+\begin{spectable}{L{0.12}L{0.88}}{Chọn bank cho descriptor d}{tab:7-4}{\textbf{Buffer} & \textbf{Quy tắc}}
+A, C & Đảo bank sau mỗi descriptor \\
+B & Đảo sau mỗi lần có LOAD\_B; với \sig{REUSE_B} = 1, dùng lại bank của descriptor trước \\
+BIAS & Đảo sau mỗi descriptor có \sig{POST_EN} = 1 \\
+\end{spectable}
+
+\begin{reqtable}{Ping-pong}{tab:7-5}
+PP-01 & Ba khối thực thi: Đọc (FETCH, kiểm tra, LOAD\_*; kênh đọc DMA), Tính (COMPUTE; array và VPU), Ghi (STORE\_C; kênh ghi DMA). Mỗi khối làm một việc một lúc, theo thứ tự descriptor. Kênh đọc và kênh ghi được phép có burst AXI cùng lúc, mỗi kênh tối đa 1 burst outstanding \\
+PP-02 & Khối Đọc làm lần lượt FETCH(d), kiểm tra d, các LOAD của d, rồi mới sang FETCH(d+1) \\
+PP-03 & LOAD vào một bank chỉ bắt đầu khi COMPUTE cuối cùng đọc bank đó đã xong \\
+PP-04 & COMPUTE(d) bắt đầu khi mọi LOAD của d và COMPUTE(d−1) đã xong, và STORE\_C cuối cùng đọc bank C của d đã xong \\
+PP-05 & STORE\_C(d) bắt đầu khi COMPUTE(d) và STORE\_C(d−1) đã xong; do đó kết quả ra DRAM đúng theo thứ tự descriptor \\
+PP-06 & \sig{WAIT_PREV} (DSC-05) chặn các LOAD, không chặn FETCH và kiểm tra \\
+PP-07 & Tại mỗi thời điểm, mỗi bank có tối đa một bên truy cập. Hai bank khác nhau của cùng buffer được truy cập độc lập trong cùng chu kỳ; mỗi bank vẫn chỉ cần SRAM một cổng \\
+PP-08 & PP-03 … PP-06 là điều kiện cần; phần cứng được phép bắt đầu một pha muộn hơn, không bao giờ sớm hơn. Nội dung DRAM sau tác vụ phải giống hệt khi chạy không ping-pong \\
+PP-09 & Soft reset: abort cả hai kênh DMA đang bận; \sig{soft_clr} phát khi cả hai kênh đã rảnh \\
+PP-10 & \sig{PERF_LOAD} + \sig{PERF_COMPUTE} + \sig{PERF_STORE} được phép lớn hơn \sig{PERF_TOTAL}; phần chênh là thời gian chạy chồng \\
+\end{reqtable}

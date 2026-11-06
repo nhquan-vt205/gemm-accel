@@ -1,0 +1,383 @@
+% !TEX program = xelatex
+% GEMM INT8 Accelerator — Thuật toán GEMM, systolic array và VPU
+\documentclass[10pt,a4paper]{article}
+\input{preamble}
+\setcounter{secnumdepth}{2}
+
+\begin{document}
+% ===================== Bìa =====================
+\thispagestyle{empty}
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[cream] (current page.north west) rectangle (current page.south east);
+\end{tikzpicture}
+\vspace*{3cm}
+{\headfont\bfseries\small\color{brand}\MakeUppercase{Tài liệu thuật toán · đi kèm spec hệ thống v1.0}\par}
+\vspace{0.6cm}
+\begin{tikzpicture}[baseline=(b.north)]\node[fill=brand,minimum width=0.25cm,minimum height=3.6cm,inner sep=0pt](b){};\end{tikzpicture}\hspace{0.45cm}\begin{minipage}[t]{0.9\linewidth}
+{\headfont\bfseries\fontsize{28}{34}\selectfont\color{brand}Từ A, B đến kết quả:\par}
+\vspace{4pt}
+{\headfont\bfseries\fontsize{28}{34}\selectfont\color{brand}GEMM, systolic array và VPU\par}
+\vspace{10pt}
+{\large\color{ink}Công thức và các bước tính, kèm một ví dụ số tính tay từ đầu đến cuối\par}
+\vspace{4pt}
+{\normalsize\color{muted}Bộ tăng tốc GEMM INT8 trên Chipyard SoC\par}
+\end{minipage}
+\vfill
+\begin{tcolorbox}[enhanced,colback=card,colframe=brandline,boxrule=0.6pt,arc=2pt,fontupper=\small,left=8pt,right=8pt]
+{\headfont\bfseries\footnotesize\color{brand}CÁCH ĐỌC}\par\vspace{3pt}
+Mục 1 cho bức tranh chung. Mục 2 và 3 giải thích bias và lượng tử hóa, là nền tảng để hiểu VPU. Mục 4, 5, 6 lần lượt là GEMM, systolic array và VPU. Mục 7 ghép tất cả thành một thuật toán đầy đủ. Mục 8 là các điểm tinh chỉnh yêu cầu rút ra từ tài liệu này. Một ví dụ số duy nhất (M = 2, K = 4, N = 4, P = 2) được dùng xuyên suốt, nên có thể kiểm tra lại từng con số bằng tay.
+\end{tcolorbox}
+\clearpage
+\tableofcontents
+
+% ===================== 1 =====================
+\section{Bức tranh tổng thể}\label{sec:1}
+
+\begin{keypoint}
+Một lớp của mạng nơ-ron tính $\mathbf{Y} = \text{ReLU}(\mathbf{X}\mathbf{W} + \mathbf{b})$. Phần nặng nhất là phép nhân ma trận $\mathbf{X}\mathbf{W}$; đó là việc của \textbf{systolic array}. Phần còn lại (cộng bias, đưa kết quả về INT8, ReLU) là việc của \textbf{VPU}. Kết quả Y lại là đầu vào A của lớp kế tiếp.
+\end{keypoint}
+
+\subsection{Một nơ-ron}
+Một nơ-ron nhận K giá trị đầu vào $x_0, \ldots, x_{K-1}$, nhân mỗi giá trị với một trọng số, cộng lại, cộng thêm một hằng số riêng của nó là \textbf{bias} $b$, rồi cho qua hàm kích hoạt:
+\[
+y = \text{ReLU}\Big(\sum_{k=0}^{K-1} x_k \, w_k + b\Big), \qquad \text{ReLU}(z) = \max(z, 0).
+\]
+
+\subsection{Một lớp, nhiều mẫu cùng lúc}
+Một lớp có N nơ-ron; mỗi lần ta đưa vào M mẫu (ví dụ M ảnh). Viết gọn dưới dạng ma trận:
+\[
+Y[i][j] = \text{ReLU}\Big(\underbrace{\sum_{k=0}^{K-1} X[i][k]\, W[k][j]}_{\text{GEMM: } C[i][j]} + b[j]\Big), \qquad 0 ≤ i < M,\ 0 ≤ j < N.
+\]
+
+\begin{spectable}{L{0.17}L{0.17}L{0.66}}{Ánh xạ lớp nơ-ron sang tên gọi trong spec}{tab:1-1}{\textbf{Tên toán học} & \textbf{Tên trong spec} & \textbf{Ý nghĩa}}
+X (M×K) & A & Activation: mỗi hàng là một mẫu, mỗi cột là một đặc trưng đầu vào \\
+W (K×N) & B & Trọng số: mỗi cột là một nơ-ron, gồm K trọng số của nó \\
+XW (M×N) & C & Tổng tích lũy INT32, chưa có bias \\
+b (N) & bias & Một hằng số cho mỗi nơ-ron, tức mỗi cột j \\
+Y (M×N) & Y & Đầu ra INT8 của lớp; là A của lớp sau \\
+\end{spectable}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\node[blkd,minimum width=1.7cm,minimum height=0.9cm] (a) at (0,0.6) {A\\[-2pt]\scriptsize INT8, M×K};
+\node[blkd,minimum width=1.7cm,minimum height=0.9cm] (b) at (0,-0.6) {B\\[-2pt]\scriptsize INT8, K×N};
+\node[blk,minimum width=2.3cm,minimum height=1.6cm] (g) at (2.9,0) {\textbf{GEMM}\\[-1pt]\scriptsize systolic array\\[-2pt]\scriptsize mục 4, 5};
+\node[blkd,minimum width=1.6cm,minimum height=0.9cm] (c) at (5.3,0) {C\\[-2pt]\scriptsize INT32};
+\node[blkn,minimum width=1.5cm,minimum height=0.9cm] (s1) at (7.25,0) {+ bias\\[-2pt]\scriptsize bước 1};
+\node[blkn,minimum width=1.75cm,minimum height=0.9cm] (s2) at (9.2,0) {× M\textsubscript{0}, dịch\\[-2pt]\scriptsize bước 2–3};
+\node[blkn,minimum width=1.4cm,minimum height=0.9cm] (s3) at (11.1,0) {ReLU\\[-2pt]\scriptsize bước 4};
+\node[blkn,minimum width=1.4cm,minimum height=0.9cm] (s4) at (12.85,0) {kẹp\\[-2pt]\scriptsize bước 5};
+\node[blkd,minimum width=1.3cm,minimum height=0.9cm] (y) at (14.6,0) {Y\\[-2pt]\scriptsize INT8};
+\draw[dat] (a) -- (g); \draw[dat] (b) -- (g); \draw[dat] (g) -- (c); \draw[dat] (c) -- (s1);
+\draw[dat] (s1) -- (s2); \draw[dat] (s2) -- (s3); \draw[dat] (s3) -- (s4); \draw[dat] (s4) -- (y);
+\draw[decorate,decoration={brace,amplitude=5pt,mirror},brand] (6.45,-0.65) -- (13.6,-0.65) node[midway,below=6pt,font=\scriptsize,text=brand]{VPU (mục 6) — chỉ chạy khi POST\_EN = 1};
+\draw[dat,dashed,rounded corners=3pt] (y.north) -- ++(0,0.8) -| node[lbl,above,pos=0.25,text=data]{lớp sau: Y trở thành A} (a.north);
+\end{tikzpicture}
+\caption{Đường đi của dữ liệu trong một lớp}\label{fig:1-1}
+\end{figure}
+
+% ===================== 2 =====================
+\section{Bias là gì}\label{sec:2}
+
+\begin{keypoint}
+Bias là \textbf{một hằng số cộng thêm cho mỗi nơ-ron}, học được trong quá trình huấn luyện, giống hệ số $b$ trong đường thẳng $y = wx + b$. Mỗi cột j của C có một bias $b[j]$; mọi hàng (mọi mẫu) dùng chung bias đó.
+\end{keypoint}
+
+\subsection{Trực giác}
+\begin{itemize}
+\item Không có bias, khi mọi đầu vào bằng 0 thì $\sum x_k w_k = 0$ và nơ-ron luôn ra 0. Bias cho phép nơ-ron có giá trị “mặc định” khác 0.
+\item Kết hợp với ReLU, bias đóng vai trò \textbf{ngưỡng}: nơ-ron chỉ “bật” khi $\sum x_k w_k > -b$. Bias dương làm nơ-ron dễ bật; bias âm làm nó khó bật.
+\item Bias là tham số của mô hình, nằm trong file trọng số cùng với W. Phần cứng không tính ra bias; nó chỉ đọc bias từ DRAM và cộng vào.
+\end{itemize}
+
+\subsection{Bias cộng vào đâu}
+Bias cộng theo \textbf{cột}: cùng một $b[j]$ cho cả cột j của C.
+\[
+\begin{bmatrix} C_{00} & C_{01} & C_{02} & C_{03} \\ C_{10} & C_{11} & C_{12} & C_{13} \end{bmatrix}
++
+\begin{bmatrix} b_0 & b_1 & b_2 & b_3 \\ b_0 & b_1 & b_2 & b_3 \end{bmatrix}
+\]
+Vì vậy bias là một vector N phần tử. VPU đọc $b[j_0], \ldots, b[j_0+P-1]$ cho P cột của tile đang xả.
+
+\begin{notebox}[Vì sao bias phải cộng trước khi requantize, và trên INT32]
+Bias thuộc về tổng $\sum x_k w_k + b$, nên phải cộng vào C khi C còn đủ độ chính xác (INT32), trước khi thu nhỏ về INT8. Nếu cộng sau khi đã làm tròn về INT8, sai số làm tròn của C và của bias cộng dồn vào nhau. Đây đúng là thứ tự mà spec quy định (FUN-03).
+\end{notebox}
+
+% ===================== 3 =====================
+\section{Lượng tử hóa INT8}\label{sec:3}
+
+\begin{keypoint}
+Mạng được huấn luyện bằng số thực. Để chạy trên phần cứng số nguyên, mỗi tensor số thực $r$ được biểu diễn bằng số nguyên $q$ nhân với một \textbf{scale} $s$: $r ≈ s \cdot q$. Phép nhân ma trận làm trên $q$; các scale được gom lại thành một hệ số duy nhất $M$, và VPU nhân với $M$ để đưa kết quả về INT8.
+\end{keypoint}
+
+\subsection{Biểu diễn đối xứng}
+\eqbox{\[
+r ≈ s\cdot q, \qquad q = \text{clamp}\Big(\text{round}\big(\tfrac{r}{s}\big), -127, 127\Big), \qquad s = \frac{\max|r|}{127}.
+\]}
+“Đối xứng” nghĩa là số thực 0 ứng với số nguyên 0 (không có zero-point). Ta dùng ba scale: $s_x$ cho activation A, $s_w$ cho trọng số B, $s_y$ cho đầu ra Y. Các scale được tính một lần trên PC, khi chuẩn bị mô hình.
+
+\subsection{C có scale gì}
+\[
+\sum_k r_x[i][k]\, r_w[k][j] ≈ \sum_k (s_x q_x)(s_w q_w) = s_x s_w \underbrace{\sum_k q_x[i][k]\, q_w[k][j]}_{C[i][j]}.
+\]
+Vậy \textbf{C là số nguyên với scale $s_x s_w$}. Tổng này cần nhiều bit hơn 8: mỗi tích tới $2^{14}$, cộng 32 tích tới $2^{19}$, nên C dùng INT32.
+
+\subsection{Bias INT32}
+Muốn cộng bias trực tiếp vào C, bias phải có \textbf{cùng scale} với C:
+\eqbox{\[
+b_q[j] = \text{round}\Big(\frac{b[j]}{s_x s_w}\Big) \quad \text{(INT32)}, \qquad acc[i][j] = C[i][j] + b_q[j] \;\;≈\;\; \frac{\sum_k r_x r_w + b}{s_x s_w}.
+\]}
+Bias được lượng tử hóa trên PC và ghi vào DRAM như một vector INT32.
+
+\subsection{Requantize: đưa về scale của đầu ra}
+Ta cần $q_y$ sao cho $s_y q_y ≈ s_x s_w \cdot acc$, tức
+\eqbox{\[
+q_y = \text{round}(M \cdot acc), \qquad M = \frac{s_x s_w}{s_y}.
+\]}
+$M$ là số thực (thường nhỏ hơn 1). Phần cứng không dùng số thực, nên $M$ được viết dưới dạng \textbf{số nguyên nhân với lũy thừa của 2}:
+\eqbox{\[
+M ≈ M_0 \cdot 2^{-(31 + sh)}, \qquad M_0 \in [2^{30}, 2^{31}), \quad sh \in \{0, \ldots, 31\}.
+\]}
+Cách tính trên PC (Python):
+\begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
+import math
+m, e = math.frexp(M)          # M = m * 2**e, m trong [0.5, 1)
+M0 = round(m * 2**31)         # M0 trong [2**30, 2**31]
+sh = -e                       # cần sh >= 0, tức M < 1
+if M0 == 2**31: M0 //= 2; sh -= 1
+\end{Verbatim}
+
+\subsection{Ví dụ số}
+Dùng xuyên suốt tài liệu: $s_x = 0{,}05$, $s_w = 0{,}02$, $s_y = 0{,}04$.
+\[
+M = \frac{0{,}05 \cdot 0{,}02}{0{,}04} = 0{,}025 = 0{,}8 \cdot 2^{-5}
+\;\Rightarrow\; M_0 = \text{round}(0{,}8 \cdot 2^{31}) = 1\,717\,986\,918,\quad sh = 5.
+\]
+Kiểm tra: $1\,717\,986\,918 \cdot 2^{-36} ≈ 0{,}0250000$. Bias số thực $b = (0{,}5;\ -0{,}3;\ 0{,}2;\ -1{,}0)$ chia cho $s_x s_w = 0{,}001$ thành $b_q = (500;\ -300;\ 200;\ -1000)$.
+
+% ===================== 4 =====================
+\section{GEMM}\label{sec:4}
+
+\begin{keypoint}
+GEMM (General Matrix Multiply) tính C = A × B. Mỗi phần tử $C[i][j]$ là tích vô hướng của hàng i của A với cột j của B. Tổng cộng có M·N·K phép nhân-cộng (MAC).
+\end{keypoint}
+
+\eqbox{\[
+C[i][j] = \sum_{k=0}^{K-1} A[i][k]\cdot B[k][j], \qquad A, B \in \text{INT8},\ C \in \text{INT32}.
+\]}
+
+\subsection{Ví dụ số}
+\[
+A = \begin{bmatrix} 12 & -5 & 30 & 7 \\ -20 & 8 & 4 & 15 \end{bmatrix}_{2\times 4}
+\qquad
+B = \begin{bmatrix} 3 & -2 & 10 & 5 \\ 6 & 4 & -7 & 1 \\ -4 & 9 & 2 & -3 \\ 8 & -1 & 5 & 6 \end{bmatrix}_{4\times 4}
+\]
+\[
+C[0][0] = 12\cdot 3 + (-5)\cdot 6 + 30\cdot(-4) + 7\cdot 8 = 36 - 30 - 120 + 56 = -58.
+\]
+\[
+C = \begin{bmatrix} -58 & 219 & 250 & 7 \\ 92 & 93 & -173 & -14 \end{bmatrix}_{2\times 4}
+\]
+
+\subsection{Vì sao N, K là bội của 4}
+DRAM và DMA làm việc theo word 32 bit = 4 phần tử INT8. Khi N, K là bội của 4, mỗi hàng của A và B chiếm đúng một số nguyên word, nên không có word nào bị “dở dang”. Nếu ma trận thật không thỏa, phần mềm đệm thêm cột 0: phép nhân với 0 không làm thay đổi tổng.
+
+% ===================== 5 =====================
+\section{Systolic array Output-Stationary}\label{sec:5}
+
+\begin{keypoint}
+Array có P×P PE. Mỗi PE giữ \textbf{một} phần tử của C và cộng dồn nó tại chỗ (output-stationary). Ma trận C lớn được chia thành các tile P×P; array tính lần lượt từng tile. Trong một tile, A chảy từ trái sang, B chảy từ trên xuống, và mỗi PE nhận đúng cặp $A[i][k]$, $B[k][j]$ mà nó cần, nhờ dữ liệu được làm lệch thời gian.
+\end{keypoint}
+
+\subsection{Chia tile}
+\eqbox{\[
+T_M = \Big\lceil \frac{M}{P} \Big\rceil,\quad T_N = \Big\lceil \frac{N}{P} \Big\rceil, \qquad
+\text{tile } (t_i, t_j) \text{ phủ } i \in [i_0, i_0+P),\ j \in [j_0, j_0+P),\ i_0 = t_i P,\ j_0 = t_j P.
+\]}
+Thuật toán tương đương viết bằng vòng lặp (thứ tự tile tự do):
+\begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
+for ti in range(ceil(M/P)):
+  for tj in range(ceil(N/P)):
+    i0, j0 = ti*P, tj*P
+    acc[r][c] = 0  (moi PE)            # thuc te: co first, khong can chu ky xoa
+    for k in range(K):                 # ca K trong mot luot
+      for r, c in PxP:                 # P*P PE chay song song
+        acc[r][c] += A[i0+r][k] * B[k][j0+c]
+    for r in range(P):                 # xa tung hang
+      if i0+r < M:
+        C[i0+r][j0 : j0+P] = acc[r][:]   (chi cot j0+c < N)
+\end{Verbatim}
+Ví dụ: M = 2, N = 4, P = 2 cho $T_M = 1$, $T_N = 2$: tile 0 là cột 0–1, tile 1 là cột 2–3. Với M = 20, N = 12, P = 8 có 3 × 2 = 6 tile; tile ở hàng 16–19 hoặc cột 8–11 là \emph{tile biên}, có PE không dùng.
+
+\subsection{Làm lệch dữ liệu (skew)}
+Ở bước k, SRAM trả về một cột của khối A (P phần tử $A[i_0+r][k]$) và một hàng của khối B (P phần tử $B[k][j_0+c]$), cùng một chu kỳ. Array không đưa chúng vào thẳng mà làm trễ:
+\begin{itemize}
+\item lane r của A trễ r chu kỳ, rồi đi sang phải, mỗi PE thêm 1 chu kỳ;
+\item lane c của B trễ c chu kỳ, rồi đi xuống, mỗi PE thêm 1 chu kỳ.
+\end{itemize}
+Kết quả là PE(r, c) nhận $A[i_0+r][k]$ và $B[k][j_0+c]$ \textbf{cùng một chu kỳ}:
+\eqbox{\[
+t_{r,c}(k) = t_0 + k + r + c.
+\]}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\foreach \r in {0,1}{\foreach \c in {0,1}{
+  \node[blk,minimum width=1.9cm,minimum height=1.1cm] (p\r\c) at (3.2+\c*2.8,-\r*1.9) {PE(\r,\c)\\[-2pt]\scriptsize giữ C[\r][\c]};}}
+\node[blkd,minimum width=1.9cm,minimum height=0.6cm,font=\scriptsize] (a0) at (0,0) {A[0][k]};
+\node[blkd,minimum width=1.9cm,minimum height=0.6cm,font=\scriptsize] (a1) at (0,-1.9) {A[1][k] · trễ 1};
+\node[blkd,minimum width=1.9cm,minimum height=0.6cm,font=\scriptsize] (b0) at (3.2,1.7) {B[k][0]};
+\node[blkd,minimum width=1.9cm,minimum height=0.6cm,font=\scriptsize] (b1) at (6.0,1.7) {B[k][1] · trễ 1};
+\draw[dat] (a0) -- (p00); \draw[dat] (p00) -- (p01);
+\draw[dat] (a1) -- (p10); \draw[dat] (p10) -- (p11);
+\draw[dat] (b0) -- (p00); \draw[dat] (p00) -- (p10);
+\draw[dat] (b1) -- (p01); \draw[dat] (p01) -- (p11);
+\node[font=\scriptsize,text=muted,align=left,anchor=west] at (7.6,-0.95) {mỗi mũi tên giữa hai PE\\là một thanh ghi: trễ 1 chu kỳ};
+\end{tikzpicture}
+\caption{Array 2×2 cho tile 0 của ví dụ (cột 0–1)}\label{fig:5-1}
+\end{figure}
+
+\begin{spectable}{L{0.1}L{0.225}L{0.225}L{0.225}L{0.225}}{PE nào nhân gì ở chu kỳ nào (tile 0, $t_0$ = 0, K = 4)}{tab:5-1}{\textbf{Chu kỳ} & \textbf{PE(0,0)} & \textbf{PE(0,1)} & \textbf{PE(1,0)} & \textbf{PE(1,1)}}
+0 & $A_{00}B_{00}$ \textit{first} & — & — & — \\
+1 & $A_{01}B_{10}$ & $A_{00}B_{01}$ \textit{first} & $A_{10}B_{00}$ \textit{first} & — \\
+2 & $A_{02}B_{20}$ & $A_{01}B_{11}$ & $A_{11}B_{10}$ & $A_{10}B_{01}$ \textit{first} \\
+3 & $A_{03}B_{30}$ \textit{last} & $A_{02}B_{21}$ & $A_{12}B_{20}$ & $A_{11}B_{11}$ \\
+4 & tile 1, k = 0 & $A_{03}B_{31}$ \textit{last} & $A_{13}B_{30}$ \textit{last} & $A_{12}B_{21}$ \\
+5 & tile 1, k = 1 & tile 1, k = 0 & tile 1, k = 0 & $A_{13}B_{31}$ \textit{last} \\
+\end{spectable}
+
+Tổng tích lũy của PE(0,0) qua các chu kỳ 0 … 3: $36 \to 6 \to -114 \to -58 = C[0][0]$.
+
+\subsection{Mỗi PE làm gì trong một chu kỳ}
+\eqbox{\[
+sum = \begin{cases} a\cdot b & \text{nếu } first \\ acc + a\cdot b & \text{ngược lại} \end{cases}
+\qquad acc \leftarrow sum, \qquad \text{nếu } last:\ res \leftarrow sum.
+\]}
+\begin{itemize}
+\item Cờ \textbf{first} đi kèm phần tử k = 0: PE nạp tích mới thay vì cộng vào giá trị cũ, nên không cần chu kỳ xóa giữa hai tile.
+\item Cờ \textbf{last} đi kèm phần tử k = K−1: PE chép tổng cuối vào thanh ghi kết quả \textbf{res}. \sig{acc} được giải phóng ngay để tính tile sau, trong khi \sig{res} chờ được xả.
+\item a, cờ hợp lệ, first, last đi sang PE bên phải; b đi xuống PE bên dưới.
+\end{itemize}
+
+\subsection{Xả kết quả theo hàng}
+PE(r, c) nhận phần tử cuối ở chu kỳ $t_0 + K - 1 + r + c$. Hàng r có đủ P kết quả khi cột cuối c = P−1 xong:
+\eqbox{\[
+\text{hàng } r \text{ sẵn sàng ở chu kỳ } t_0 + K + P - 1 + r.
+\]}
+Các hàng sẵn sàng lần lượt, mỗi chu kỳ một hàng, nên array xả đúng \textbf{một hàng mỗi chu kỳ} sang VPU. Trong ví dụ, hàng 0 của tile 0 ($C_{00}, C_{01}$) sẵn sàng ở chu kỳ 5, hàng 1 ở chu kỳ 6.
+
+\subsection{Tile kế tiếp và tile biên}
+\begin{itemize}
+\item Tile kế tiếp bắt đầu sau $\max(K, P)$ chu kỳ. Điều kiện này bảo đảm hàng r của tile trước đã được xả trước khi tile sau ghi đè \sig{res} của hàng đó, và cổng ghi không bị hai hàng dùng cùng lúc. Trong ví dụ, tile 1 bắt đầu ở chu kỳ 4 (bảng~\ref{tab:5-1}).
+\item Thời gian tính xấp xỉ: $T_M T_N \cdot \max(K, P) + 2P$ chu kỳ.
+\item Tile biên: hàng r chỉ hợp lệ khi $i_0 + r < M$, cột c khi $j_0 + c < N$. PE không hợp lệ vẫn tính (trên dữ liệu rác), nhưng hàng không hợp lệ không được xả và cột không hợp lệ có mask = 0, nên không vị trí sai nào bị ghi.
+\end{itemize}
+
+% ===================== 6 =====================
+\section{VPU: hậu xử lý}\label{sec:6}
+
+\begin{keypoint}
+VPU nhận từng hàng INT32 từ array, mỗi chu kỳ một hàng P phần tử, và áp dụng 5 bước cho từng phần tử. Bước 2–3 là cách làm phép nhân với số thực $M$ bằng số nguyên. Khi \sig{POST_EN} = 0, VPU cho C đi thẳng, không đổi.
+\end{keypoint}
+
+\begin{spectable}{L{0.13}L{0.35}L{0.52}}{Năm bước của VPU}{tab:6-1}{\textbf{Bước} & \textbf{Công thức} & \textbf{Ý nghĩa}}
+1. Cộng bias & $acc = C[i][j] + b_q[j]$ (INT32) & Hoàn thành $\sum x w + b$ ở scale $s_x s_w$ \\
+2. Nhân & $prod = acc \cdot M_0$ (64 bit) & Phần “số nguyên” của phép nhân với $M$ \\
+3. Dịch có làm tròn & $y = (prod + 2^{30+sh}) \gg (31+sh)$ & Phần “lũy thừa 2” của $M$. Cộng nửa đơn vị trước khi dịch để làm tròn thay vì cắt bỏ \\
+4. ReLU & $y = \max(y, 0)$ nếu \sig{RELU_EN} & Hàm kích hoạt; lớp cuối thường tắt \\
+5. Kẹp & $Y = \min(\max(y, -128), 127)$ & Đưa về miền INT8 \\
+\end{spectable}
+
+\subsection{Vì sao bước 3 làm tròn đúng}
+Dịch phải $n$ bit là chia cho $2^n$ rồi lấy phần nguyên dưới (floor). Cộng thêm $2^{n-1}$ (nửa đơn vị) trước khi dịch biến floor thành làm tròn tới số gần nhất; trường hợp đúng nửa được làm tròn lên. Với $n = 31 + sh$ thì $2^{n-1} = 2^{30+sh}$.
+
+\subsection{Vì sao cần 64 bit và không bao giờ tràn}
+$|acc| < 2^{31}$ và $|M_0| < 2^{31}$ nên $|prod| < 2^{62}$; cộng thêm $2^{30+sh} ≤ 2^{61}$ vẫn nhỏ hơn $2^{63}$. Phép tính 64 bit có dấu luôn đủ chỗ.
+
+\subsection{Ví dụ số}
+Với C ở mục 4, $b_q = (500; -300; 200; -1000)$, $M_0 = 1\,717\,986\,918$, $sh = 5$ (dịch 36 bit), ReLU bật:
+
+\begin{spectable}{L{0.1}L{0.1}L{0.12}L{0.22}L{0.13}L{0.1}L{0.13}L{0.1}}{VPU trên từng phần tử của ví dụ}{tab:6-2}{\textbf{(i, j)} & \textbf{C} & \textbf{acc} & \textbf{prod} & \textbf{y} & \textbf{Y} & \textbf{số thực} & \textbf{$Y\cdot s_y$}}
+(0,0) & −58 & 442 & 759 350 217 756 & 11 & 11 & 0,442 & 0,44 \\
+(0,1) & 219 & −81 & −139 156 940 358 & −2 & 0 & 0 & 0 \\
+(0,2) & 250 & 450 & 773 094 113 100 & 11 & 11 & 0,450 & 0,44 \\
+(0,3) & 7 & −993 & −1 705 961 009 574 & −25 & 0 & 0 & 0 \\
+(1,0) & 92 & 592 & 1 017 048 255 456 & 15 & 15 & 0,592 & 0,60 \\
+(1,1) & 93 & −207 & −355 623 292 026 & −5 & 0 & 0 & 0 \\
+(1,2) & −173 & 27 & 46 385 646 786 & 1 & 1 & 0,027 & 0,04 \\
+(1,3) & −14 & −1014 & −1 742 038 734 852 & −25 & 0 & 0 & 0 \\
+\end{spectable}
+
+Cột “số thực” là $\text{ReLU}(\sum r_x r_w + b)$ tính bằng số thực; cột cuối là giá trị Y quy ngược về số thực. Hai cột gần bằng nhau: sai khác chỉ do làm tròn về INT8. Kiểm tra tay ô (0,0): $442 \cdot 1\,717\,986\,918 = 759\,350\,217\,756$; cộng $2^{35}$ rồi chia $2^{36}$ được 11,55; lấy phần nguyên: 11.
+
+\[
+Y = \begin{bmatrix} 11 & 0 & 11 & 0 \\ 15 & 0 & 1 & 0 \end{bmatrix}
+\qquad \text{(INT8, ghi ra DRAM tại BASE\_ADDR\_OUT, 1 byte mỗi phần tử)}
+\]
+
+% ===================== 7 =====================
+\section{Toàn bộ thuật toán}\label{sec:7}
+
+\begin{keypoint}
+Ghép các mục trên lại: phần mềm chuẩn bị số nguyên trên PC, phần cứng chạy 6 pha, kết quả là Y (hoặc C) trong DRAM. Đoạn dưới đây là thuật toán đầy đủ, theo đúng thứ tự phần cứng làm.
+\end{keypoint}
+
+\subsection{Chuẩn bị trên PC (một lần cho mỗi mô hình)}
+\begin{enumerate}
+\item Huấn luyện mô hình số thực; chọn $s_x, s_w, s_y$ cho từng lớp.
+\item Lượng tử hóa: $q_w = \text{round}(W/s_w)$ → B (INT8); $b_q = \text{round}(b/(s_x s_w))$ → bias (INT32); $M = s_x s_w / s_y$ → ($M_0$, $sh$).
+\item Đệm 0 để N, K là bội của 4; xếp row-major, little-endian; nạp vào DRAM.
+\end{enumerate}
+
+\subsection{Trên accelerator (mỗi lần gọi)}
+\begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
+CHECK_CFG : kiem tra M, N, K, dia chi, tham so
+LOAD_BIAS : bias[0..N-1]  <- DRAM          (neu POST_EN)
+LOAD_A    : A[0..M-1][0..K-1] <- DRAM
+LOAD_B    : B[0..K-1][0..N-1] <- DRAM
+COMPUTE   : moi tile (i0, j0):
+              moi k:  PE(r,c): acc += A[i0+r][k] * B[k][j0+c]   (co skew)
+              k = K-1: res <- acc
+              moi hang r hop le (moi chu ky mot hang):
+                v = res[r][0..P-1]                      # INT32
+                neu POST_EN:
+                  acc2 = v + bias[j0..j0+P-1]
+                  y    = (acc2 * M0 + 2^(30+sh)) >> (31+sh)
+                  neu RELU_EN: y = max(y, 0)
+                  v    = clamp(y, -128, 127)            # INT8
+                ghi v vao buffer C (mask cot j0+c < N)
+STORE_C   : buffer C -> DRAM  (M*N word INT32, hoac M*N/4 word INT8)
+DONE
+\end{Verbatim}
+
+\subsection{Khi lớp lớn hơn 32}
+\begin{spectable}{L{0.12}L{0.43}L{0.45}}{Chia lớp lớn thành nhiều lần gọi}{tab:7-1}{\textbf{Chia theo} & \textbf{Cách làm} & \textbf{Lưu ý về bias và VPU}}
+M & Mỗi lần gọi lấy 32 hàng của A, ghi 32 hàng của kết quả & Dùng VPU bình thường: mỗi hàng độc lập \\
+N & Mỗi lần gọi lấy một dải cột của B (đã xếp sẵn), ra một dải cột của kết quả & Dùng VPU bình thường, với đoạn bias tương ứng của dải cột \\
+K & Mỗi lần gọi tính một tổng riêng phần $C_t$ trên một khúc K; kết quả thật là $\sum_t C_t$ & \textbf{Phải} đặt \sig{POST_EN} = 0 cho mọi khúc. CPU cộng các $C_t$, rồi tự làm bước 1–5. Nếu bật VPU từng khúc, bias bị cộng nhiều lần và requantize bị làm trên tổng chưa đủ \\
+\end{spectable}
+
+\begin{notebox}[Lớp cuối]
+Lớp cuối của mạng phân loại thường chỉ cần argmax (cột có giá trị lớn nhất). Có thể đặt \sig{POST_EN} = 0 để giữ C ở INT32 (CPU tự cộng bias) và lấy argmax trên giá trị chính xác hơn; hoặc bật VPU với \sig{RELU_EN} = 0 nếu chấp nhận độ phân giải INT8.
+\end{notebox}
+
+% ===================== 8 =====================
+\section{Tinh chỉnh yêu cầu}\label{sec:8}
+
+\begin{keypoint}
+Đối chiếu với lý thuyết ở trên, yêu cầu VPU trong spec v1.0 (FUN-03) đã \textbf{đúng chuẩn}: bias INT32 cùng scale với C, cộng trước requantize, requantize bằng $M_0$ và dịch, rồi ReLU và kẹp. Bảng dưới là các điểm nên bổ sung hoặc cần bạn quyết định.
+\end{keypoint}
+
+\begin{spectable}{L{0.05}L{0.22}L{0.25}L{0.48}}{Các điểm tinh chỉnh}{tab:8-1}{\textbf{\#} & \textbf{Điểm} & \textbf{Hiện trạng spec v1.0} & \textbf{Đề xuất}}
+1 & Bias INT32, scale $s_x s_w$, cộng trước requantize & Đúng (FUN-03, FUN-04) & Giữ nguyên \\
+2 & Ràng buộc $M < 1$ & Ngầm định do $sh ≥ 0$, chưa ghi rõ & Ghi thêm vào FUN-04: phần mềm phải bảo đảm $M_0 \cdot 2^{-(31+sh)} < 1$. Thực tế $s_y$ luôn đủ lớn để điều này đúng \\
+3 & Lớp chia K & Không nói gì & Không cần sửa spec; ghi vào hướng dẫn firmware: khúc K luôn dùng \sig{POST_EN} = 0 (bảng~\ref{tab:7-1}) \\
+4 & Per-tensor hay per-channel & Một cặp ($M_0$, $sh$) cho cả lớp & Giữ per-tensor: đủ chính xác cho MLP và CNN nhỏ. Per-channel (mỗi cột j một cặp) tốt hơn một chút nhưng cần thêm 2 vector tham số và thanh ghi địa chỉ, tức phải đổi register map đã khóa. \textbf{Cần bạn quyết định ngay} nếu muốn để ngỏ khả năng này \\
+5 & Zero-point & Đối xứng, không zero-point & Giữ. Hệ quả: sau ReLU, Y chỉ dùng 0 … 127, bỏ phí 1 bit; ảnh hưởng nhỏ với workload của đồ án \\
+6 & Kiểu làm tròn & Nửa lên (FUN-03) & Giữ. Lưu ý: khác TFLite (làm tròn nửa ra xa 0) ở các số âm đúng nửa; golden model phải dùng đúng công thức của spec, không lấy kết quả TFLite để so từng bit \\
+7 & Đầu vào lớp đầu & A phải là INT8 đối xứng & Ảnh digits có pixel 0 … 16 nên dùng thẳng $q_x$ = pixel, $s_x$ = 1/16 hoặc tương tự \\
+\end{spectable}
+
+\end{document}

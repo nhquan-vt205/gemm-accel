@@ -1,0 +1,18 @@
+# CI: chạy mỗi lần push và mỗi Pull Request vào main
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cài Verilator
+        run: sudo apt-get update && sudo apt-get install -y verilator
+      - name: Lint RTL (3 cấu hình)
+        run: make lint
+  # Khi đã có testbench: thêm job chạy "make regress LIST=smoke SIM=verilator"

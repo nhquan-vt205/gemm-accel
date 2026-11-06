@@ -1,0 +1,2 @@
+# Danh sách regress "unit" — mỗi dòng: <TB> <TC> [BIẾN=giá_trị ...]
+# ví dụ: tb_gemm_vpu unit/vpu/basic
