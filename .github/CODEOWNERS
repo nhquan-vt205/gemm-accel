@@ -1,17 +1,29 @@
 # Mỗi dòng: <đường dẫn> <tài khoản GitHub của người phụ trách>
-# Bỏ dấu # đầu dòng và điền tên khi đã chia việc. PR sửa thư mục nào sẽ tự gán người đó review.
-# /src/rtl/systolic_array/      <github-user>
-# /src/tb/unit/systolic_array/  <github-user>
-# /src/rtl/vpu/                 <github-user>
-# /src/tb/unit/vpu/             <github-user>
-# /src/rtl/local_sram/          <github-user>
-# /src/tb/unit/local_sram/      <github-user>
-# /src/rtl/dma_engine/          <github-user>
-# /src/tb/unit/dma_engine/      <github-user>
-# /src/rtl/main_fsm/            <github-user>
-# /src/tb/unit/main_fsm/        <github-user>
-# /src/rtl/register_file/       <github-user>
-# /src/tb/unit/register_file/   <github-user>
-# /src/rtl/top/                 <github-user>
-# /src/tb/top/                  <github-user>
-# /docs/system/                 <github-user>
+# PR sửa thư mục nào sẽ tự gán người đó review. Dòng sau ghi đè dòng trước nếu cùng khớp.
+
+# Systolic array, Scratchpad, Top/tích hợp — Ngô Hồ Quân
+/src/rtl/systolic_array/          @nhquan-vt205
+/src/tb/unit/systolic_array/      @nhquan-vt205
+/docs/modules/systolic_array/     @nhquan-vt205
+/src/rtl/local_sram/              @nhquan-vt205
+/src/tb/unit/local_sram/          @nhquan-vt205
+/docs/modules/local_sram/         @nhquan-vt205
+/src/rtl/top/                     @nhquan-vt205
+/src/tb/top/                      @nhquan-vt205
+/docs/system/                     @nhquan-vt205
+
+# VPU, DMA — Vũ Quốc Tuấn
+/src/rtl/vpu/                     @vutuanvt
+/src/tb/unit/vpu/                 @vutuanvt
+/docs/modules/vpu/                @vutuanvt
+/src/rtl/dma_engine/              @vutuanvt
+/src/tb/unit/dma_engine/          @vutuanvt
+/docs/modules/dma_engine/         @vutuanvt
+
+# Register File, Main FSM — Nguyễn Duy Nhất
+/src/rtl/register_file/           @dinhat255
+/src/tb/unit/register_file/       @dinhat255
+/docs/modules/register_file/      @dinhat255
+/src/rtl/main_fsm/                @dinhat255
+/src/tb/unit/main_fsm/            @dinhat255
+/docs/modules/main_fsm/           @dinhat255

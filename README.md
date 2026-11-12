@@ -343,12 +343,12 @@ Không commit out/wave/build. Commit generator và các vector regression cần 
 
 | Module | Thư mục RTL | Spec | Người phụ trách |
 |---|---|---|---|
-| Systolic array | `src/rtl/systolic_array` | `docs/modules/systolic_array` | |
-| VPU | `src/rtl/vpu` | `docs/modules/vpu` | |
-| Scratchpad | `src/rtl/local_sram` | `docs/modules/local_sram` | |
-| DMA | `src/rtl/dma_engine` | `docs/modules/dma_engine` | |
-| Main FSM | `src/rtl/main_fsm` | `docs/modules/main_fsm` | |
-| Register File | `src/rtl/register_file` | `docs/modules/register_file` | |
-| Top, tích hợp | `src/rtl/top`, `src/tb/top` | `docs/system` | |
+| Systolic array | `src/rtl/systolic_array` | `docs/modules/systolic_array` | Ngô Hồ Quân |
+| VPU | `src/rtl/vpu` | `docs/modules/vpu` | Vũ Quốc Tuấn |
+| Scratchpad | `src/rtl/local_sram` | `docs/modules/local_sram` | Ngô Hồ Quân |
+| DMA | `src/rtl/dma_engine` | `docs/modules/dma_engine` | Vũ Quốc Tuấn |
+| Main FSM | `src/rtl/main_fsm` | `docs/modules/main_fsm` | Nguyễn Duy Nhất |
+| Register File | `src/rtl/register_file` | `docs/modules/register_file` | Nguyễn Duy Nhất |
+| Top, tích hợp | `src/rtl/top`, `src/tb/top` | `docs/system` | Ngô Hồ Quân |
 
-Điền tên vào bảng và vào `.github/CODEOWNERS` khi đã chia việc.
+Mỗi người phụ trách RTL, spec, unit TB/TC và `pat.list` của module mình. `.github/CODEOWNERS` tự gán reviewer theo thư mục: Ngô Hồ Quân `@nhquan-vt205`, Vũ Quốc Tuấn `@vutuanvt`, Nguyễn Duy Nhất `@dinhat255`.
