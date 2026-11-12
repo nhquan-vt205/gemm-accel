@@ -10,8 +10,10 @@ gemm-accel/
 │   ├── system/                         spec hệ thống, PDF + LaTeX
 │   ├── algorithm/                      thuật toán
 │   ├── modules/<module>/               spec từng khối
+│   ├── decisions/                      bảng quyết định baseline D-xx, PDF + LaTeX
+│   ├── diagram/                        sơ đồ SVG dùng chung cho các spec
 │   ├── verification/                   vplan/checklist; hiện có reset_sync_vplan.md
-│   └── common/preamble.tex
+│   └── common/spec_style.tex           style LaTeX chung của các spec
 ├── model/
 │   ├── gemm_golden.py                  golden GEMM/VPU, hàm ghi dữ liệu
 │   ├── gemm_*_model.py                 model từng khối

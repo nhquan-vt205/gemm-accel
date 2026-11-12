@@ -1,66 +1,203 @@
 \section{Tổng quan}\label{sec:1}
 
-
+\begin{keypoint}
+\sig{gemm_accel_top} là bộ tăng tốc nhân ma trận INT8 gắn vào SoC Chipyard qua hai cổng AXI: một
+AXI4-Lite slave cho CPU cấu hình, một AXI4-Full master để tự đọc/ghi DRAM. CPU dựng một
+\emph{chuỗi descriptor} trong DRAM, ghi \sig{DESC_PTR}, ghi START, rồi chờ bằng polling. Accelerator
+tự đọc từng descriptor, nạp A và B vào scratchpad, tính $C = A \times B$ trên mảng systolic 8×8 PE,
+hậu xử lý tùy descriptor, rồi ghi kết quả ra DRAM. Thiết kế gồm đúng sáu khối chức năng, một miền
+clock \sig{clk} 100 MHz, scratchpad ping-pong hai bank để nạp, tính và ghi của các descriptor kế
+nhau chạy chồng nhau.
+\end{keypoint}
 
 \subsection{Phạm vi chức năng}\label{sec:1.1}
 \begin{itemize}
-\item Mỗi tác vụ tính một phép GEMM: A là M×K, B là K×N, kiểu INT8 có dấu; tích lũy INT32; M ≤ 32, N ≤ 32, K ≤ 32.
-\item Kết quả ra DRAM ở một trong hai dạng: C (INT32, không hậu xử lý) hoặc Y (INT8, sau bias, requantize, ReLU tùy chọn, kẹp).
-\item CPU cấu hình qua AXI4-Lite (MMIO) và chờ kết quả bằng polling; DMA đọc/ghi DRAM qua AXI4-Full.
-\item Các pha của một tác vụ chạy tuần tự: nạp dữ liệu, tính, ghi kết quả.
-\item Không có: ngắt, C += A × B, ma trận lớn hơn 32 trong một tác vụ, dataflow Weight-Stationary, bộ nhớ ảo.
+\item Mỗi tác vụ là một chuỗi descriptor. Mỗi descriptor tính một phép GEMM: A là M×K, B là K×N, kiểu INT8 có dấu; tích lũy INT32; M ≤ 32, N ≤ 32, K ≤ 32.
+\item Kết quả ra DRAM ở một trong hai dạng: C (INT32, không hậu xử lý) hoặc Y (INT8, sau bias, requantize, ReLU tùy descriptor, kẹp). Dạng nào do bit \sig{POST_EN} của descriptor quyết định.
+\item CPU dựng descriptor trong DRAM, ghi \sig{DESC_PTR}, ghi START, rồi chờ kết quả bằng polling. DMA đọc/ghi DRAM qua AXI4-Full, hai kênh độc lập.
+\item Nạp, tính và ghi của các descriptor kế nhau chạy chồng trên scratchpad ping-pong.
+\item Dataflow của systolic array là \textbf{Output-Stationary}: PE(r, c) giữ bộ cộng dồn của $C[i_0+r][j_0+c]$ suốt k = 0 … K−1; A chảy sang đông, B chảy xuống nam, mỗi chu kỳ một PE; tile xong thì xả kết quả theo hàng sang VPU (D-30).
+\item Ngoài phạm vi (không hỗ trợ): ngắt, $C \mathrel{+}= A \times B$, ma trận lớn hơn 32 trong một descriptor, các dataflow khác (Weight-Stationary, Input-Stationary), bộ nhớ ảo, GEMM lập trình trực tiếp bằng thanh ghi MMIO.
 \end{itemize}
+
+\begin{notebox}[Quyết định baseline D-01]
+Hai nguồn khác nhau ở mô hình lập trình: \sig{spec_1} chỉ có chế độ chuỗi descriptor và dự trữ
+offset 0x08…0x24, còn \sig{spec_2} còn giữ thêm một chế độ \emph{single} lập trình bằng các thanh ghi
+\sig{MATRIX_DIM}, \sig{BASE_ADDR_IN}, \sig{BASE_ADDR_WEIGHT}, \sig{BASE_ADDR_OUT},
+\sig{POST_CTRL}, \sig{BIAS_ADDR}, \sig{QUANT_M0}, \sig{QUANT_SHIFT} tại các offset đó, cùng
+\sig{CTRL[0]} = START, \sig{CTRL[2]} = START\_CHAIN và \sig{STATUS[3]} = MODE.
+Baseline chọn \sig{spec_1}: \textbf{chỉ có chế độ chuỗi descriptor}. Lý do: kiến trúc đã chốt là
+descriptor-based DMA; chế độ register-programmed là một nhánh thiết kế thứ hai làm đúng cùng một
+việc, nhân đôi đường cấu hình trong Register File và Main FSM (thêm tám bus cấu hình, mỗi bus ứng với một
+thanh ghi RW, cùng tín hiệu \sig{start_kind} trên giao diện RF→FSM) và buộc STATUS mang thêm một bit chế độ. Tác động: 0x08…0x24 là Reserved; \sig{CTRL[2]} là
+bit START duy nhất; \sig{STATUS[3]} dự trữ, đọc 0; không có tín hiệu \sig{start_kind}.
+\end{notebox}
 
 \subsection{Quy ước}\label{sec:1.2}
 \begin{itemize}
-\item M, N, K: A là M×K, B là K×N, C và Y là M×N. P: kích thước array vật lý (P×P PE). \emph{word} = 32 bit; \emph{beat} = một lần truyền AXI 32 bit; \emph{tile} = khối P×P của C mà array tính trong một lượt.
-\item \emph{Tác vụ}: từ khi lệnh START được chấp nhận đến khi STATUS báo DONE hoặc ERROR. \emph{Bản chụp cấu hình}: bản sao các thanh ghi cấu hình, lấy đúng lúc START được chấp nhận và dùng suốt tác vụ.
+\item M, N, K: A là M×K, B là K×N, C và Y là M×N. P: kích thước array vật lý (P×P PE), chốt bằng 8. \emph{word} = 32 bit; \emph{beat} = một lần truyền AXI 32 bit; \emph{tile} = khối P×P của C mà array tính trong một lượt.
+\item \emph{Tác vụ}: từ khi START được chấp nhận đến khi STATUS báo DONE hoặc ERROR. \emph{Job}: một descriptor trong chuỗi. Tham số của job nằm trong descriptor. \sig{DESC_PTR} được chụp lúc START được chấp nhận.
+\item \emph{Pha}: một bước của job — FETCH, kiểm tra, LOAD\_BIAS, LOAD\_A, LOAD\_B, COMPUTE, STORE\_C.
+\item Số hex viết dạng 0x6000\_0000; số nhị phân dạng 4'b1111. Thời gian quy đổi theo chu kỳ \sig{clk} 10,0 ns.
+\item Chiều tín hiệu ở biên module nội bộ: \sig{i_*} là input, \sig{o_*} là output. Tín hiệu AXI giữ nguyên tên \sig{s_axi_*} và \sig{m_axi_*}.
 \end{itemize}
 
-\label{sec:1.3}
+\subsection{Kiến trúc tổng thể}\label{sec:1.3}
 
+Dữ liệu đi một chiều: DRAM → DMA → scratchpad → array → VPU → scratchpad → DMA → DRAM. Điều khiển đi
+vòng: CPU → Register File → Main FSM → DMA và array, rồi về Main FSM bằng các xung done/error.
+\sig{gemm_accel_top} không chứa logic dữ liệu và không chứa FSM; nó chỉ đấu nối sáu instance và đặt
+bộ đồng bộ reset hai flip-flop.
 
+Kiến trúc được vẽ thành hai hình, mỗi hình trên một trang nằm ngang riêng. Hình~\ref{fig:1-1} là
+luồng dữ liệu: DMA, scratchpad, array và VPU cùng các giao diện dữ liệu giữa chúng; các cổng điều khiển
+của bốn khối này chỉ vẽ thành bó dây ngắn ghi nhóm tên port, đi tới \sig{u_main_fsm}. Hình~\ref{fig:1-2}
+là luồng điều khiển: Register File, Main FSM, các lệnh và trạng thái giữa FSM với bốn khối dữ liệu, net
+\sig{soft_clr} và bộ đồng bộ reset; cổng dữ liệu của bốn khối không vẽ lại ở hình này. Mỗi dây là một
+bó tín hiệu, ghi nhóm tên port ở hai đầu; danh sách đầy đủ thành viên và port map nằm trong model
+(\sig{<desc id="model">}) của từng file SVG.
 
-\subsection{Module}\label{sec:1.4}
+\diagfigwide{gemm_accel_top_dataflow}{Luồng dữ liệu của \sigc{gemm_accel_top}: DRAM → DMA → scratchpad
+(A, B, BIAS) → array → VPU → scratchpad (C) → DMA → DRAM}{fig:1-1}
 
-\begin{spectable}{|L{0.25}|L{0.15}|L{0.6}|}{Module trong \sigc{gemm_accel_top}}{tab:1-1}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
-\sig{gemm_register_file} & \sig{u_regfile} & AXI4-Lite slave; thanh ghi cấu hình, trạng thái, bộ đếm; chấp nhận START; giữ bản chụp cấu hình \\\hline
+\diagfigwide{gemm_accel_top_control}{Luồng điều khiển của \sigc{gemm_accel_top}: CPU → Register File →
+Main FSM → bốn khối dữ liệu, net \sigc{soft_clr} và bộ đồng bộ reset hai flip-flop}{fig:1-2}
 
-\sig{gemm_main_fsm} & \sig{u_main_fsm} & Kiểm tra cấu hình; chạy lần lượt các pha của tác vụ; ra lệnh cho DMA và array; báo DONE/ERROR; điều phối soft reset \\\hline
+\begin{spectable}{|L{0.2}|L{0.8}|}{Luồng dữ liệu và luồng điều khiển qua sáu khối}{tab:1-1}{\textbf{Chặng} & \textbf{Nội dung}}
+CPU → RF & Ghi \sig{DESC_PTR} và \sig{CTRL[2]} qua AXI4-Lite; đọc \sig{STATUS}, \sig{PERF_*}, \sig{ERR_DESC_ADDR}, \sig{DESC_DONE_CNT} \\\hline
 
-\sig{gemm_dma_engine} & \sig{u_dma} & AXI4-Full master; chép DRAM ↔ scratchpad theo lệnh LOAD\_A, LOAD\_B, LOAD\_BIAS, STORE\_C \\\hline
+RF → FSM & \sig{o_start_pulse}, \sig{o_soft_req}, \sig{o_cfg_desc_ptr} \\\hline
 
-\sig{gemm_local_sram} & \sig{u_sram} & Buffer A, B, C, BIAS, chia bank bên trong để phục vụ array và VPU mỗi chu kỳ \\\hline
+FSM → DMA & Lệnh kênh đọc (\sig{o_rd_*}: FETCH, LOAD\_BIAS, LOAD\_A, LOAD\_B) và lệnh kênh ghi (\sig{o_wr_*}: STORE\_C) \\\hline
 
-\sig{gemm_systolic_array} & \sig{u_array} & Mảng P×P PE (\sig{gemm_pe}), làm lệch dữ liệu, bộ tuần tự tile, xả kết quả theo hàng \\\hline
+DRAM → DMA → SRAM & Kênh đọc AXI nhận beat 32 bit, ghi vào bank của buffer A, B hoặc BIAS. Descriptor không vào scratchpad: DMA trả 16 word về FSM qua \sig{o_desc_valid}, \sig{o_desc_idx}, \sig{o_desc_data} \\\hline
 
-\sig{gemm_vpu} & \sig{u_vpu} & Hậu xử lý trên đường xả kết quả: bias, requantize, ReLU, kẹp INT8; đi thẳng khi tắt \\\hline
+SRAM → Array & Array đọc vector A (\sig{o_a_rd_*}) và B (\sig{o_b_rd_*}), mỗi vector 64 bit, dữ liệu về sau đúng một chu kỳ \\\hline
+
+Array → VPU & Luồng hàng kết quả: \sig{o_row_valid}, \sig{o_row_data} 256 bit, \sig{o_row_idx}, \sig{o_row_col}, \sig{o_row_mask}. Không có đường ready \\\hline
+
+VPU → SRAM & VPU đọc bias (\sig{o_bias_rd_*}) và ghi bank C (\sig{o_c_wr_*}, 256 bit, có mask) \\\hline
+
+SRAM → DMA → DRAM & Kênh ghi đọc bank C qua \sig{o_spm_rd_*}, đẩy qua WFIFO rồi phát beat W ra AXI \\\hline
+
+FSM → RF & \sig{o_done_pulse}, \sig{o_err_pulse}, \sig{o_err_code}, \sig{o_perf_*}, \sig{o_soft_busy}, \sig{o_err_desc_addr}, \sig{o_desc_done_cnt} \\\hline
+
+FSM → mọi khối & \sig{o_soft_clr}: xung xóa đồng bộ một chu kỳ tới RF, DMA, SRAM, Array, VPU \\\hline
 
 \end{spectable}
 
-Ngoài 6 module trên, \sig{gemm_accel_top} có một bộ đồng bộ reset 2 flip-flop .
+\subsection{Module}\label{sec:1.4}
+
+\begin{spectable}{|L{0.25}|L{0.15}|L{0.6}|}{Module trong \sigc{gemm_accel_top}}{tab:1-2}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
+\sig{gemm_register_file} & \sig{u_regfile} & AXI4-Lite slave; \sig{DESC_PTR}, trạng thái, bộ đếm; chấp nhận START và SOFT\_RESET \\\hline
+
+\sig{gemm_main_fsm} & \sig{u_main_fsm} & Bộ tuần tự duy nhất: kiểm tra descriptor; lập lịch ba engine Đọc, Tính, Ghi; ra lệnh cho DMA và array; báo DONE/ERROR; điều phối soft reset \\\hline
+
+\sig{gemm_dma_engine} & \sig{u_dma} & AXI4-Full master, hai kênh độc lập; FETCH descriptor, LOAD\_A, LOAD\_B, LOAD\_BIAS, STORE\_C \\\hline
+
+\sig{gemm_local_sram} & \sig{u_sram} & Bốn buffer A, B, C, BIAS; mỗi buffer hai bank ping-pong; mỗi bank chia sub-bank một cổng cho array và VPU \\\hline
+
+\sig{gemm_systolic_array} & \sig{u_array} & Mảng 8×8 PE (\sig{gemm_pe}) output-stationary, làm lệch dữ liệu, bộ tuần tự tile, xả kết quả theo hàng \\\hline
+
+\sig{gemm_vpu} & \sig{u_vpu} & Hậu xử lý trên đường xả kết quả: bias, requantize, ReLU, kẹp INT8; đi thẳng khi \sig{POST_EN} = 0 \\\hline
+
+\end{spectable}
+
+Ngoài sáu module trên, \sig{gemm_accel_top} chỉ có một bộ đồng bộ reset 2 flip-flop. Không có khối
+thứ bảy, không có logic dữ liệu ở mức top.
 
 \subsection{Tham số hệ thống}\label{sec:1.5}
 
-\begin{spectable}{|L{0.3}|L{0.25}|L{0.45}|}{Tham số hệ thống}{tab:1-2}{\textbf{Tham số} & \textbf{Giá trị} & \textbf{Ghi chú}}
-\sig{PE_ARRAY_SIZE} (P) & 4 hoặc 8; mặc định 8 & Kết quả không phụ thuộc P \\\hline
+\begin{spectable}{|L{0.3}|L{0.22}|L{0.48}|}{Tham số hệ thống}{tab:1-3}{\textbf{Tham số} & \textbf{Giá trị} & \textbf{Ghi chú}}
+\sig{PE_ARRAY_SIZE} (P) & 8 & Giá trị hợp lệ duy nhất; giá trị khác bị chặn lúc elaboration \\\hline
+
+Số PE & 64 & P × P \\\hline
+
+Q & 2 & Số sub-bank của buffer B; dẫn xuất P/4 \\\hline
+
+LP & 3 & $\log_2 P$ \\\hline
+
+\sig{AB_VEC_WIDTH} & 64 bit & Vector A và B đọc từ SRAM; dẫn xuất 8·P \\\hline
+
+\sig{ROW_VEC_WIDTH} & 256 bit & Hàng kết quả array → VPU → bank C; dẫn xuất 32·P \\\hline
 
 \sig{MAX_DIM} & 32 & Giới hạn M, N, K \\\hline
 
 \sig{AXI_DATA_WIDTH} & 32 & Cả AXI4-Lite và AXI4-Full \\\hline
 
-\sig{MAX_BURST_BEATS} & 16 (mặc định) & Đặt theo giới hạn của bridge \\\hline
+\sig{MAX_BURST_BEATS} & 16 & Baseline chốt 16 (D-36); miền tham số 1 … 256 \\\hline
 
-\sig{SRAM_RD_LAT} & 1 chu kỳ & Cổng phía array và VPU \\\hline
+\sig{WFIFO_DEPTH} & 4 & FIFO ghi của DMA, 4 × 32 bit (localparam) \\\hline
 
-Buffer A / B / C / BIAS & 256 / 256 / 1024 / 32 word & Tổng 6,125 KiB \\\hline
+\sig{MUL_STAGES} & 1 & Số tầng thanh ghi của bộ nhân requantize trong VPU \\\hline
+
+\sig{VPU_LATENCY} (LAT) & 4 & $3 + \text{\sig{MUL_STAGES}}$; array dùng cùng giá trị làm \sig{L_VPU} \\\hline
+
+NB & 2 & Số bank mỗi buffer (ping-pong) \\\hline
+
+Buffer A / B / C / BIAS & 256 / 256 / 1024 / 32 word mỗi bank & Hai bank mỗi buffer; 1568 word mỗi bank; tổng 3136 word = 12,25 KiB \\\hline
+
+\sig{SRAM_RD_LAT} & 1 chu kỳ & Cổng phía array, VPU và DMA \\\hline
 
 \sig{MMIO_BASE} & 0x6000\_0000, vùng 4 KiB & \\\hline
 
 \sig{DRAM_BASE} & 0x8000\_0000 & \\\hline
 
-Burst outstanding & 1 đọc + 1 ghi & \\\hline
+Burst outstanding & 1 đọc + 1 ghi & Mỗi kênh tối đa một burst chưa kết thúc \\\hline
+
+\sig{TARGET_CLK_FREQ} & 100 MHz & Mục tiêu tổng hợp; chu kỳ 10,0 ns \\\hline
 
 \end{spectable}
 
-% Mục 6 — Port top-level (đã khóa)
+\begin{notebox}[Quyết định baseline D-04]
+\sig{spec_1} cho \sig{PE_ARRAY_SIZE} nhận 4 hoặc 8 và khẳng định kết quả không phụ thuộc P;
+\sig{spec_2} chốt P = 8 cố định. Baseline chốt \textbf{P = 8}, giá trị khác bị chặn lúc elaboration.
+Lý do: kiến trúc đã chốt là PE 8×8, và P = 4 là một nhánh thiết kế thứ hai kéo theo hai bộ độ rộng
+bus (32 bit và 128 bit cho vector A/B, 128 bit và 256 bit cho hàng kết quả), hai lịch skew và hai
+công thức timing trong bốn module. Tác động: Q, LP, \sig{AB_VEC_WIDTH}, \sig{ROW_VEC_WIDTH} trở
+thành hằng số; \sig{HW_CONFIG[7:0]} luôn đọc ra 8.
+\end{notebox}
+
+\begin{notebox}[Quyết định baseline D-05]
+\sig{spec_1} cho \sig{MUL_STAGES} nhận 1 hoặc 2 và đặt \sig{L_VPU} của array mặc định 0 trong khi
+vẫn yêu cầu \sig{L_VPU} = LAT — hai câu này mâu thuẫn nhau. \sig{spec_2} chốt \sig{MUL_STAGES} = 1,
+LAT = 4. Baseline chốt \textbf{\sig{MUL_STAGES} = 1, LAT = \sig{L_VPU} = 4}, lấy
+\sig{gemm_pkg::VPU_LATENCY} làm nguồn duy nhất; array và VPU đều kiểm giá trị này lúc elaboration.
+Lý do: ở 100 MHz (10 ns) một tầng cho phép nhân 32×32 → 64 bit; \sig{MUL_STAGES} = 2 chỉ cần khi
+đẩy tần số cao hơn. Chọn 1 giữ LAT nhỏ nhất, giảm chiều sâu đường ống VPU và khớp mặc định của
+\sig{spec_2}. Nếu tổng hợp không đạt 100 MHz, cách sửa đã định trước là đặt \sig{MUL_STAGES} = 2
+(LAT = \sig{L_VPU} = 5): đây là thay đổi tham số, không phải thay đổi kiến trúc.
+\end{notebox}
+
+\subsection{Clock và reset}\label{sec:1.6}
+
+\begin{spectable}{|L{0.26}|L{0.74}|}{Clock và reset của hệ thống}{tab:1-4}{\textbf{Hạng mục} & \textbf{Quy định}}
+Miền clock & Đúng một miền, \sig{clk}. Mọi flip-flop cập nhật tại cạnh lên. Không có CDC, không có clock gating, không có clock chia \\\hline
+
+Tần số mục tiêu & 100 MHz, chu kỳ danh định 10,0 ns, duty 50 \% \\\hline
+
+Đường tổ hợp dài nhất đã biết & Bộ nhân 32×32 → 64 bit của VPU (\sig{MUL_STAGES} = 1) và MAC INT8 một chu kỳ của \sig{gemm_pe} \\\hline
+
+Reset ngoài & \sig{rst_n}, tích cực mức thấp, kích hoạt bất đồng bộ \\\hline
+
+Đồng bộ reset & \sig{gemm_accel_top} có bộ đồng bộ 2 flip-flop: bật bất đồng bộ, nhả đồng bộ với \sig{clk}. Đầu ra \sig{rst_n_sync} cấp cho cả sáu module \\\hline
+
+Độ trễ nhả reset & \sig{rst_n_sync} lên cao sau đúng 2 cạnh lên của \sig{clk} kể từ khi \sig{rst_n} lên cao \\\hline
+
+Soft reset & \sig{soft_clr}: xung xóa \textbf{đồng bộ} một chu kỳ do Main FSM phát. Không đi vào chân reset của bất kỳ flip-flop nào \\\hline
+
+Nội dung scratchpad & Không bị xóa bởi \sig{rst_n} cũng không bởi \sig{soft_clr}; coi là không xác định \\\hline
+
+\end{spectable}
+
+\begin{notebox}[Quyết định baseline D-20, D-21, D-22]
+Không nguồn nào nêu chu kỳ clock; kiến trúc chốt đặt 100 MHz, nên baseline lấy chu kỳ danh định
+10,0 ns và quy đổi mọi số đo thời gian theo đó (D-20). Nguồn nêu bộ đồng bộ 2 flip-flop nhưng không
+nêu giá trị khởi tạo: baseline chọn \textbf{cả hai flip-flop có reset bất đồng bộ về 0}, nên
+\sig{rst_n_sync} xuống thấp ngay khi \sig{rst_n} xuống, không cần clock chạy — bảo đảm accelerator
+vào trạng thái reset khi SoC chưa có clock ổn định (D-21). Quy tắc hiện thực kèm theo: flip-flop
+trạng thái dùng \sig{always_ff @(posedge clk or negedge rst_n_sync)}; flip-flop chỉ chứa dữ liệu
+(\sig{acc} và \sig{res} của PE, nội dung RAM, thanh ghi dữ liệu trong đường ống VPU) dùng
+\sig{always_ff @(posedge clk)} và không có giá trị reset. Nội dung scratchpad sau reset là
+\textbf{không xác định}, không có mạch xóa (D-22); firmware không được đọc vùng đích trước DONE.
+\end{notebox}

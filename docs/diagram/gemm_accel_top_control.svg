@@ -1,0 +1,276 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="790" viewBox="0 0 1400 790"
+     font-family="Calibri, Arial, sans-serif" font-size="13">
+  <!-- subject : gemm_accel_top (control-flow view) -->
+  <!-- diagram : architecture (6 u_ instances + 2FF reset synchronizer; each interface one bundle wire; data ports of the four data blocks are in the data-flow view) -->
+  <!-- source  : spec_baseline/system/latex/sections/s1_tong_quan.tex, s2_port_top.tex, s7_tich_hop.tex (tab:6-1); module port tables -->
+  <!-- param   : PE_ARRAY_SIZE = 8, NB = 2, VPU_LATENCY = 4, MAX_BURST_BEATS = 16 -->
+  <desc id="model"><![CDATA[
+// clk goes to every instance and is not drawn. rst_n_sync (output of the 2FF synchronizer)
+// is the reset of all six instances and is not drawn as a wire into them (convention).
+// View: control flow of gemm_accel_top. The data ports of u_dma, u_sram, u_array and u_vpu
+//   (m_axi_*, scratchpad ports, a/b vectors, row stream, bias/C ports) are drawn in
+//   gemm_accel_top_dataflow.svg and are omitted here; the port maps below are complete.
+// Abstraction: each interface -> one bundle wire labelled with the port-name group at each
+//   end. FSM -> u_dma: o_rd_*/o_wr_* = {start, dst|fmt, base, rows, rwords, stride, bank,
+//   abort}; u_dma -> FSM: o_rd_*/o_wr_* = {busy, done, error}, o_desc_* = {valid, idx, data}.
+//   o_err_* = {err_pulse, err_code, err_desc_addr}; o_perf_* = {perf_load, perf_comp,
+//   perf_store}; o_comp_bank_* = {a, b, bias, c}.
+// soft_clr is one net: u_main_fsm.o_soft_clr -> i_soft_clr of u_regfile, u_dma, u_sram,
+//   u_array, u_vpu (synchronous one-cycle clear; never drives a flip-flop reset pin).
+
+[reg_rst_sync0]
+rst_sync0_q <= 1'b1 @(rst=1'b0);                     // async assert, sync release
+
+[reg_rst_sync1]
+rst_sync1_q <= rst_sync0_q @(rst=1'b0);
+rst_n_sync   = rst_sync1_q;                          // reset of all six instances
+
+[u_regfile]
+gemm_register_file u_regfile (
+  .s_axi_*(s_axi_*),
+  .i_soft_clr(soft_clr),
+  .o_start_pulse(start_pulse), .o_soft_req(soft_req), .o_cfg_desc_ptr(cfg_desc_ptr),
+  .i_done_pulse(done_pulse), .i_err_pulse(err_pulse), .i_err_code(err_code),
+  .i_perf_load(perf_load), .i_perf_comp(perf_comp), .i_perf_store(perf_store),
+  .i_soft_busy(soft_busy), .i_err_desc_addr(err_desc_addr), .i_desc_done_cnt(desc_done_cnt));
+
+[u_main_fsm]
+gemm_main_fsm u_main_fsm (
+  .i_start_pulse(start_pulse), .i_soft_req(soft_req), .i_cfg_desc_ptr(cfg_desc_ptr),
+  .o_done_pulse(done_pulse), .o_err_pulse(err_pulse), .o_err_code(err_code),
+  .o_perf_load(perf_load), .o_perf_comp(perf_comp), .o_perf_store(perf_store),
+  .o_soft_busy(soft_busy), .o_err_desc_addr(err_desc_addr), .o_desc_done_cnt(desc_done_cnt),
+  .o_soft_clr(soft_clr),
+  .o_rd_start(rd_start), .o_rd_dst(rd_dst), .o_rd_base(rd_base), .o_rd_rows(rd_rows),
+  .o_rd_rwords(rd_rwords), .o_rd_stride(rd_stride), .o_rd_bank(rd_bank), .o_rd_abort(rd_abort),
+  .i_rd_busy(rd_busy), .i_rd_done(rd_done), .i_rd_error(rd_error),
+  .i_desc_valid(desc_valid), .i_desc_idx(desc_idx), .i_desc_data(desc_data),
+  .o_wr_start(wr_start), .o_wr_fmt(wr_fmt), .o_wr_base(wr_base), .o_wr_rows(wr_rows),
+  .o_wr_rwords(wr_rwords), .o_wr_stride(wr_stride), .o_wr_bank(wr_bank), .o_wr_abort(wr_abort),
+  .i_wr_busy(wr_busy), .i_wr_done(wr_done), .i_wr_error(wr_error),
+  .o_pe_start(pe_start), .o_comp_dim(comp_dim), .i_pe_done(pe_done), .i_pe_busy(pe_busy),
+  .o_comp_post_en(comp_post_en), .o_comp_relu_en(comp_relu_en),
+  .o_comp_qm0(comp_qm0), .o_comp_qshift(comp_qshift),
+  .o_comp_bank_a(comp_bank_a), .o_comp_bank_b(comp_bank_b),
+  .o_comp_bank_bias(comp_bank_bias), .o_comp_bank_c(comp_bank_c),
+  .o_comp_active(comp_active));
+// no i_soft_clr: the FSM resets its own state in state T_CLR, the cycle it drives o_soft_clr
+
+[u_dma]
+gemm_dma_engine u_dma (
+  .i_soft_clr(soft_clr),
+  .i_rd_start(rd_start), .i_rd_dst(rd_dst), .i_rd_base(rd_base), .i_rd_rows(rd_rows),
+  .i_rd_rwords(rd_rwords), .i_rd_stride(rd_stride), .i_rd_bank(rd_bank), .i_rd_abort(rd_abort),
+  .o_rd_busy(rd_busy), .o_rd_done(rd_done), .o_rd_error(rd_error),
+  .o_desc_valid(desc_valid), .o_desc_idx(desc_idx), .o_desc_data(desc_data),
+  .i_wr_start(wr_start), .i_wr_fmt(wr_fmt), .i_wr_base(wr_base), .i_wr_rows(wr_rows),
+  .i_wr_rwords(wr_rwords), .i_wr_stride(wr_stride), .i_wr_bank(wr_bank), .i_wr_abort(wr_abort),
+  .o_wr_busy(wr_busy), .o_wr_done(wr_done), .o_wr_error(wr_error),
+  .o_spm_wr_valid(dw_valid), .o_spm_wr_buf(dw_buf), .o_spm_wr_bank(dw_bank),
+  .o_spm_wr_addr(dw_addr), .o_spm_wr_data(dw_data), .i_spm_wr_ready(dw_ready),
+  .o_spm_rd_valid(dr_valid), .o_spm_rd_bank(dr_bank), .o_spm_rd_addr(dr_addr),
+  .i_spm_rd_ready(dr_ready), .i_spm_rd_rvalid(dr_rvalid), .i_spm_rd_rdata(dr_rdata),
+  .m_axi_*(m_axi_*));
+
+[u_sram]
+gemm_local_sram u_sram (
+  .i_soft_clr(soft_clr),
+  .i_dw_valid(dw_valid), .i_dw_buf(dw_buf), .i_dw_bank(dw_bank), .i_dw_addr(dw_addr),
+  .i_dw_data(dw_data), .o_dw_ready(dw_ready),
+  .i_dr_valid(dr_valid), .i_dr_bank(dr_bank), .i_dr_addr(dr_addr),
+  .o_dr_ready(dr_ready), .o_dr_rvalid(dr_rvalid), .o_dr_rdata(dr_rdata),
+  .i_comp_bank_a(comp_bank_a), .i_comp_bank_b(comp_bank_b),
+  .i_comp_bank_bias(comp_bank_bias), .i_comp_bank_c(comp_bank_c), .i_comp_active(comp_active),
+  .i_a_rd_en(a_rd_en), .i_a_rd_row(a_rd_row), .i_a_rd_k(a_rd_k), .o_a_rd_data(a_rd_data),
+  .i_b_rd_en(b_rd_en), .i_b_rd_k(b_rd_k), .i_b_rd_col(b_rd_col), .o_b_rd_data(b_rd_data),
+  .i_bias_rd_en(bias_rd_en), .i_bias_rd_col(bias_rd_col), .o_bias_rd_data(bias_rd_data),
+  .i_c_wr_en(c_wr_en), .i_c_wr_fmt(c_wr_fmt), .i_c_wr_row(c_wr_row), .i_c_wr_col(c_wr_col),
+  .i_c_wr_data(c_wr_data), .i_c_wr_mask(c_wr_mask));
+// 4 buffers x NB=2 banks: A 256, B 256, C 1024, BIAS 32 words per bank (3136 words, 12.25 KiB)
+// read latency is exactly 1 cycle; o_dw_ready = o_dr_ready = 1'b1 (no backpressure)
+
+[u_array]
+gemm_systolic_array u_array (                        // P = 8, 64 PE, output-stationary
+  .i_soft_clr(soft_clr),
+  .i_pe_start(pe_start), .i_matrix_dim(comp_dim),
+  .o_pe_done(pe_done), .o_busy(pe_busy),
+  .o_a_rd_en(a_rd_en), .o_a_rd_row(a_rd_row), .o_a_rd_k(a_rd_k), .i_a_rd_data(a_rd_data),
+  .o_b_rd_en(b_rd_en), .o_b_rd_k(b_rd_k), .o_b_rd_col(b_rd_col), .i_b_rd_data(b_rd_data),
+  .o_row_valid(row_valid), .o_row_idx(row_idx), .o_row_col(row_col),
+  .o_row_data(row_data), .o_row_mask(row_mask));
+// o_a_rd_en == o_b_rd_en always; o_pe_done = o_final delayed L_VPU + 1 = 5 cycles
+
+[u_vpu]
+gemm_vpu u_vpu (                                     // 8 lanes, LAT = 3 + MUL_STAGES = 4
+  .i_soft_clr(soft_clr),
+  .i_post_en(comp_post_en), .i_relu_en(comp_relu_en),
+  .i_quant_m0(comp_qm0), .i_quant_shift(comp_qshift),
+  .i_row_valid(row_valid), .i_row_idx(row_idx), .i_row_col(row_col),
+  .i_row_data(row_data), .i_row_mask(row_mask),
+  .o_bias_rd_en(bias_rd_en), .o_bias_rd_col(bias_rd_col), .i_bias_rd_data(bias_rd_data),
+  .o_c_wr_en(c_wr_en), .o_c_wr_fmt(c_wr_fmt), .o_c_wr_row(c_wr_row), .o_c_wr_col(c_wr_col),
+  .o_c_wr_data(c_wr_data), .o_c_wr_mask(c_wr_mask));
+// o_bias_rd_en = i_row_valid & i_post_en and o_bias_rd_col = i_row_col are the only
+// combinational input-to-output path of the VPU (the DMA has two more: m_axi_rready and
+// o_spm_wr_valid/o_spm_wr_data, see the system spec integration rules)
+]]></desc>
+  <style>
+    .w{fill:none;stroke:#000;stroke-width:1.5}
+    .s{fill:#fff;stroke:#000;stroke-width:1.5}
+    .dot{fill:#000}
+    text{fill:#000}
+  </style>
+  <rect width="100%" height="100%" fill="#fff"/>
+
+  <!-- ===== instances ===== -->
+  <g id="u_regfile">
+    <rect class="s" x="160" y="140" width="160" height="340"/>
+    <text x="240" y="308" text-anchor="middle">u_regfile</text>
+    <text x="240" y="326" text-anchor="middle">gemm_register_file</text>
+  </g>
+  <g id="u_main_fsm">
+    <rect class="s" x="650" y="140" width="180" height="620"/>
+    <text x="740" y="448" text-anchor="middle">u_main_fsm</text>
+    <text x="740" y="466" text-anchor="middle">gemm_main_fsm</text>
+  </g>
+  <g id="u_dma">
+    <rect class="s" x="1130" y="140" width="150" height="160"/>
+    <text x="1205" y="218" text-anchor="middle">u_dma</text>
+    <text x="1205" y="236" text-anchor="middle">gemm_dma_engine</text>
+  </g>
+  <g id="u_sram">
+    <rect class="s" x="1130" y="330" width="150" height="80"/>
+    <text x="1205" y="368" text-anchor="middle">u_sram</text>
+    <text x="1205" y="386" text-anchor="middle">gemm_local_sram</text>
+  </g>
+  <g id="u_array">
+    <rect class="s" x="1130" y="440" width="150" height="140"/>
+    <text x="1205" y="508" text-anchor="middle">u_array</text>
+    <text x="1205" y="526" text-anchor="middle">gemm_systolic_array</text>
+  </g>
+  <g id="u_vpu">
+    <rect class="s" x="1130" y="610" width="150" height="140"/>
+    <text x="1205" y="678" text-anchor="middle">u_vpu</text>
+    <text x="1205" y="696" text-anchor="middle">gemm_vpu</text>
+  </g>
+
+  <!-- ===== subject port: AXI4-Lite slave ===== -->
+  <line class="w" x1="70" y1="170" x2="160" y2="170"/>
+  <text x="66" y="174" text-anchor="end">s_axi_*</text>
+  <text x="156" y="166" text-anchor="end">s_axi_*</text>
+
+  <!-- ===== u_regfile <-> u_main_fsm ===== -->
+  <line class="w" x1="320" y1="200" x2="650" y2="200"/>
+  <text x="324" y="196">o_start_pulse</text>
+  <text x="646" y="196" text-anchor="end">i_start_pulse</text>
+  <line class="w" x1="320" y1="230" x2="650" y2="230"/>
+  <text x="324" y="226">o_soft_req</text>
+  <text x="646" y="226" text-anchor="end">i_soft_req</text>
+  <line class="w" x1="320" y1="260" x2="650" y2="260"/>
+  <text x="324" y="256">o_cfg_desc_ptr[31:0]</text>
+  <text x="646" y="256" text-anchor="end">i_cfg_desc_ptr[31:0]</text>
+  <line class="w" x1="320" y1="290" x2="650" y2="290"/>
+  <text x="324" y="286">i_done_pulse</text>
+  <text x="646" y="286" text-anchor="end">o_done_pulse</text>
+  <line class="w" x1="320" y1="320" x2="650" y2="320"/>
+  <text x="324" y="316">i_err_*</text>
+  <text x="646" y="316" text-anchor="end">o_err_*</text>
+  <line class="w" x1="320" y1="350" x2="650" y2="350"/>
+  <text x="324" y="346">i_perf_*</text>
+  <text x="646" y="346" text-anchor="end">o_perf_*</text>
+  <line class="w" x1="320" y1="380" x2="650" y2="380"/>
+  <text x="324" y="376">i_soft_busy</text>
+  <text x="646" y="376" text-anchor="end">o_soft_busy</text>
+  <line class="w" x1="320" y1="410" x2="650" y2="410"/>
+  <text x="324" y="406">i_desc_done_cnt[31:0]</text>
+  <text x="646" y="406" text-anchor="end">o_desc_done_cnt[31:0]</text>
+
+  <!-- ===== u_main_fsm -> four data blocks ===== -->
+  <line class="w" x1="830" y1="160" x2="1130" y2="160"/>
+  <text x="834" y="156">o_rd_*</text>
+  <text x="1126" y="156" text-anchor="end">i_rd_*</text>
+  <line class="w" x1="830" y1="190" x2="1130" y2="190"/>
+  <text x="834" y="186">i_rd_*</text>
+  <text x="1126" y="186" text-anchor="end">o_rd_*</text>
+  <line class="w" x1="830" y1="220" x2="1130" y2="220"/>
+  <text x="834" y="216">i_desc_*</text>
+  <text x="1126" y="216" text-anchor="end">o_desc_*</text>
+  <line class="w" x1="830" y1="250" x2="1130" y2="250"/>
+  <text x="834" y="246">o_wr_*</text>
+  <text x="1126" y="246" text-anchor="end">i_wr_*</text>
+  <line class="w" x1="830" y1="280" x2="1130" y2="280"/>
+  <text x="834" y="276">i_wr_*</text>
+  <text x="1126" y="276" text-anchor="end">o_wr_*</text>
+  <line class="w" x1="830" y1="350" x2="1130" y2="350"/>
+  <text x="834" y="346">o_comp_bank_*</text>
+  <text x="1126" y="346" text-anchor="end">i_comp_bank_*</text>
+  <line class="w" x1="830" y1="380" x2="1130" y2="380"/>
+  <text x="834" y="376">o_comp_active</text>
+  <text x="1126" y="376" text-anchor="end">i_comp_active</text>
+  <line class="w" x1="830" y1="470" x2="1130" y2="470"/>
+  <text x="834" y="466">o_pe_start</text>
+  <text x="1126" y="466" text-anchor="end">i_pe_start</text>
+  <line class="w" x1="830" y1="500" x2="1130" y2="500"/>
+  <text x="834" y="496">o_comp_dim[31:0]</text>
+  <text x="1126" y="496" text-anchor="end">i_matrix_dim[31:0]</text>
+  <line class="w" x1="830" y1="530" x2="1130" y2="530"/>
+  <text x="834" y="526">i_pe_done</text>
+  <text x="1126" y="526" text-anchor="end">o_pe_done</text>
+  <line class="w" x1="830" y1="560" x2="1130" y2="560"/>
+  <text x="834" y="556">i_pe_busy</text>
+  <text x="1126" y="556" text-anchor="end">o_busy</text>
+  <line class="w" x1="830" y1="630" x2="1130" y2="630"/>
+  <text x="834" y="626">o_comp_post_en</text>
+  <text x="1126" y="626" text-anchor="end">i_post_en</text>
+  <line class="w" x1="830" y1="660" x2="1130" y2="660"/>
+  <text x="834" y="656">o_comp_relu_en</text>
+  <text x="1126" y="656" text-anchor="end">i_relu_en</text>
+  <line class="w" x1="830" y1="690" x2="1130" y2="690"/>
+  <text x="834" y="686">o_comp_qm0[31:0]</text>
+  <text x="1126" y="686" text-anchor="end">i_quant_m0[31:0]</text>
+  <line class="w" x1="830" y1="720" x2="1130" y2="720"/>
+  <text x="834" y="716">o_comp_qshift[4:0]</text>
+  <text x="1126" y="716" text-anchor="end">i_quant_shift[4:0]</text>
+
+  <!-- ===== soft_clr: one net, FSM top edge -> RF top edge and the four data blocks ===== -->
+  <line class="w" x1="740" y1="140" x2="740" y2="100"/>
+  <path class="w" d="M240,140 L240,100 L1370,100 L1370,680 L1280,680"/>
+  <circle class="dot" cx="740" cy="100" r="4"/>
+  <line class="w" x1="1370" y1="220" x2="1280" y2="220"/>
+  <circle class="dot" cx="1370" cy="220" r="4"/>
+  <line class="w" x1="1370" y1="370" x2="1280" y2="370"/>
+  <circle class="dot" cx="1370" cy="370" r="4"/>
+  <line class="w" x1="1370" y1="510" x2="1280" y2="510"/>
+  <circle class="dot" cx="1370" cy="510" r="4"/>
+  <text x="746" y="124">o_soft_clr</text>
+  <text x="246" y="124">i_soft_clr</text>
+  <text x="1284" y="216">i_soft_clr</text>
+  <text x="1284" y="366">i_soft_clr</text>
+  <text x="1284" y="506">i_soft_clr</text>
+  <text x="1284" y="676">i_soft_clr</text>
+
+  <!-- ===== reset synchronizer (2 FF) ===== -->
+  <g id="reg_rst_sync0">
+    <rect class="s" x="350" y="520" width="90" height="110"/>
+    <path class="w" d="M350,600 L364,610 L350,620"/>
+    <circle class="s" cx="395" cy="635" r="5"/>
+    <text x="395" y="579" text-anchor="middle">rst_sync0_q</text>
+  </g>
+  <g id="reg_rst_sync1">
+    <rect class="s" x="480" y="520" width="90" height="110"/>
+    <path class="w" d="M480,600 L494,610 L480,620"/>
+    <circle class="s" cx="525" cy="635" r="5"/>
+    <text x="525" y="579" text-anchor="middle">rst_sync1_q</text>
+  </g>
+  <line class="w" x1="320" y1="575" x2="350" y2="575"/>
+  <text x="315" y="579" text-anchor="end">1'b1</text>
+  <line class="w" x1="440" y1="575" x2="480" y2="575"/>
+  <line class="w" x1="570" y1="575" x2="610" y2="575"/>
+  <text x="574" y="571">rst_n_sync</text>
+  <path class="w" d="M70,690 L525,690 L525,640"/>
+  <line class="w" x1="395" y1="690" x2="395" y2="640"/>
+  <circle class="dot" cx="395" cy="690" r="4"/>
+  <text x="66" y="694" text-anchor="end">rst_n</text>
+  <text x="401" y="660">rst_n</text>
+  <text x="531" y="660">rst_n</text>
+</svg>

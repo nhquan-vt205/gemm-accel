@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="750" viewBox="0 0 1280 750"
+     font-family="Calibri, Arial, sans-serif" font-size="13">
+  <!-- subject : gemm_accel_top (data-flow view) -->
+  <!-- diagram : architecture (4 data blocks as u_ instances, each interface one bundle wire; control ports as bundles to u_main_fsm, drawn in the control-flow view) -->
+  <!-- source  : spec_baseline/system/latex/sections/s1_tong_quan.tex, s2_port_top.tex, s7_tich_hop.tex (tab:6-1); module port tables -->
+  <!-- param   : PE_ARRAY_SIZE = 8, NB = 2, VPU_LATENCY = 4, MAX_BURST_BEATS = 16 -->
+  <desc id="model"><![CDATA[
+// clk and rst_n_sync go to every instance and are not drawn (convention).
+// View: data flow of gemm_accel_top. u_regfile, u_main_fsm and the reset synchronizer are
+//   drawn in gemm_accel_top_control.svg; here the control ports of the four data blocks are
+//   short bundles labelled with their port groups, ending at the text u_main_fsm.
+// Abstraction: each inter-module interface -> one bundle wire labelled with the port-name
+//   group of the block at each end; the member list is in the port maps below.
+// Data path: DRAM -m_axi R-> u_dma -i_dw_*-> u_sram (A, B, BIAS) -a/b vectors-> u_array
+//   -row stream-> u_vpu -c_wr_*-> u_sram (C) -i_dr_*/o_dr_*-> u_dma -m_axi AW/W-> DRAM.
+// Group members: o_spm_wr_* = {valid, buf, bank, addr, data}; o_spm_rd_* = {valid, bank, addr};
+//   i_spm_rd_* = {ready, rvalid, rdata}; o_a_rd_* = {en, row, k}; o_b_rd_* = {en, k, col};
+//   o_row_* = {valid, idx, col, data[255:0], mask[7:0]}; o_bias_rd_* = {en, col};
+//   o_c_wr_* = {en, fmt, row, col, data[255:0], mask[7:0]}.
+
+[u_dma]
+gemm_dma_engine u_dma (
+  .i_soft_clr(soft_clr),
+  .i_rd_start(rd_start), .i_rd_dst(rd_dst), .i_rd_base(rd_base), .i_rd_rows(rd_rows),
+  .i_rd_rwords(rd_rwords), .i_rd_stride(rd_stride), .i_rd_bank(rd_bank), .i_rd_abort(rd_abort),
+  .o_rd_busy(rd_busy), .o_rd_done(rd_done), .o_rd_error(rd_error),
+  .o_desc_valid(desc_valid), .o_desc_idx(desc_idx), .o_desc_data(desc_data),
+  .i_wr_start(wr_start), .i_wr_fmt(wr_fmt), .i_wr_base(wr_base), .i_wr_rows(wr_rows),
+  .i_wr_rwords(wr_rwords), .i_wr_stride(wr_stride), .i_wr_bank(wr_bank), .i_wr_abort(wr_abort),
+  .o_wr_busy(wr_busy), .o_wr_done(wr_done), .o_wr_error(wr_error),
+  .o_spm_wr_valid(dw_valid), .o_spm_wr_buf(dw_buf), .o_spm_wr_bank(dw_bank),
+  .o_spm_wr_addr(dw_addr), .o_spm_wr_data(dw_data), .i_spm_wr_ready(dw_ready),
+  .o_spm_rd_valid(dr_valid), .o_spm_rd_bank(dr_bank), .o_spm_rd_addr(dr_addr),
+  .i_spm_rd_ready(dr_ready), .i_spm_rd_rvalid(dr_rvalid), .i_spm_rd_rdata(dr_rdata),
+  .m_axi_*(m_axi_*));
+
+[u_sram]
+gemm_local_sram u_sram (
+  .i_soft_clr(soft_clr),
+  .i_dw_valid(dw_valid), .i_dw_buf(dw_buf), .i_dw_bank(dw_bank), .i_dw_addr(dw_addr),
+  .i_dw_data(dw_data), .o_dw_ready(dw_ready),
+  .i_dr_valid(dr_valid), .i_dr_bank(dr_bank), .i_dr_addr(dr_addr),
+  .o_dr_ready(dr_ready), .o_dr_rvalid(dr_rvalid), .o_dr_rdata(dr_rdata),
+  .i_comp_bank_a(comp_bank_a), .i_comp_bank_b(comp_bank_b),
+  .i_comp_bank_bias(comp_bank_bias), .i_comp_bank_c(comp_bank_c), .i_comp_active(comp_active),
+  .i_a_rd_en(a_rd_en), .i_a_rd_row(a_rd_row), .i_a_rd_k(a_rd_k), .o_a_rd_data(a_rd_data),
+  .i_b_rd_en(b_rd_en), .i_b_rd_k(b_rd_k), .i_b_rd_col(b_rd_col), .o_b_rd_data(b_rd_data),
+  .i_bias_rd_en(bias_rd_en), .i_bias_rd_col(bias_rd_col), .o_bias_rd_data(bias_rd_data),
+  .i_c_wr_en(c_wr_en), .i_c_wr_fmt(c_wr_fmt), .i_c_wr_row(c_wr_row), .i_c_wr_col(c_wr_col),
+  .i_c_wr_data(c_wr_data), .i_c_wr_mask(c_wr_mask));
+// 4 buffers x NB=2 banks: A 256, B 256, C 1024, BIAS 32 words per bank (3136 words, 12.25 KiB)
+// read latency is exactly 1 cycle; o_dw_ready = o_dr_ready = 1'b1 (no backpressure)
+
+[u_array]
+gemm_systolic_array u_array (                        // P = 8, 64 PE, output-stationary
+  .i_soft_clr(soft_clr),
+  .i_pe_start(pe_start), .i_matrix_dim(comp_dim),
+  .o_pe_done(pe_done), .o_busy(pe_busy),
+  .o_a_rd_en(a_rd_en), .o_a_rd_row(a_rd_row), .o_a_rd_k(a_rd_k), .i_a_rd_data(a_rd_data),
+  .o_b_rd_en(b_rd_en), .o_b_rd_k(b_rd_k), .o_b_rd_col(b_rd_col), .i_b_rd_data(b_rd_data),
+  .o_row_valid(row_valid), .o_row_idx(row_idx), .o_row_col(row_col),
+  .o_row_data(row_data), .o_row_mask(row_mask));
+// o_a_rd_en == o_b_rd_en always; o_pe_done = o_final delayed L_VPU + 1 = 5 cycles
+
+[u_vpu]
+gemm_vpu u_vpu (                                     // 8 lanes, LAT = 3 + MUL_STAGES = 4
+  .i_soft_clr(soft_clr),
+  .i_post_en(comp_post_en), .i_relu_en(comp_relu_en),
+  .i_quant_m0(comp_qm0), .i_quant_shift(comp_qshift),
+  .i_row_valid(row_valid), .i_row_idx(row_idx), .i_row_col(row_col),
+  .i_row_data(row_data), .i_row_mask(row_mask),
+  .o_bias_rd_en(bias_rd_en), .o_bias_rd_col(bias_rd_col), .i_bias_rd_data(bias_rd_data),
+  .o_c_wr_en(c_wr_en), .o_c_wr_fmt(c_wr_fmt), .o_c_wr_row(c_wr_row), .o_c_wr_col(c_wr_col),
+  .o_c_wr_data(c_wr_data), .o_c_wr_mask(c_wr_mask));
+// o_bias_rd_en = i_row_valid & i_post_en and o_bias_rd_col = i_row_col are the only
+// combinational input-to-output path of the VPU (the DMA has two more: m_axi_rready and
+// o_spm_wr_valid/o_spm_wr_data, see the system spec integration rules)
+]]></desc>
+  <style>
+    .w{fill:none;stroke:#000;stroke-width:1.5}
+    .s{fill:#fff;stroke:#000;stroke-width:1.5}
+    .dot{fill:#000}
+    text{fill:#000}
+  </style>
+  <rect width="100%" height="100%" fill="#fff"/>
+
+  <!-- ===== instances ===== -->
+  <g id="u_dma">
+    <rect class="s" x="190" y="140" width="160" height="240"/>
+    <text x="270" y="258" text-anchor="middle">u_dma</text>
+    <text x="270" y="276" text-anchor="middle">gemm_dma_engine</text>
+  </g>
+  <g id="u_sram">
+    <rect class="s" x="560" y="140" width="200" height="500"/>
+    <text x="660" y="388" text-anchor="middle">u_sram</text>
+    <text x="660" y="406" text-anchor="middle">gemm_local_sram</text>
+  </g>
+  <g id="u_array">
+    <rect class="s" x="1080" y="140" width="160" height="200"/>
+    <text x="1160" y="238" text-anchor="middle">u_array</text>
+    <text x="1160" y="256" text-anchor="middle">gemm_systolic_array</text>
+  </g>
+  <g id="u_vpu">
+    <rect class="s" x="1080" y="460" width="160" height="180"/>
+    <text x="1160" y="548" text-anchor="middle">u_vpu</text>
+    <text x="1160" y="566" text-anchor="middle">gemm_vpu</text>
+  </g>
+
+  <!-- ===== subject port: AXI4 master to DRAM ===== -->
+  <line class="w" x1="80" y1="170" x2="190" y2="170"/>
+  <text x="76" y="174" text-anchor="end">m_axi_*</text>
+  <text x="186" y="166" text-anchor="end">m_axi_*</text>
+
+  <!-- ===== u_dma <-> u_sram ===== -->
+  <line class="w" x1="350" y1="200" x2="560" y2="200"/>
+  <text x="354" y="196">o_spm_wr_*</text>
+  <text x="556" y="196" text-anchor="end">i_dw_*</text>
+  <line class="w" x1="350" y1="240" x2="560" y2="240"/>
+  <text x="354" y="236">i_spm_wr_ready</text>
+  <text x="556" y="236" text-anchor="end">o_dw_ready</text>
+  <line class="w" x1="350" y1="280" x2="560" y2="280"/>
+  <text x="354" y="276">o_spm_rd_*</text>
+  <text x="556" y="276" text-anchor="end">i_dr_*</text>
+  <line class="w" x1="350" y1="320" x2="560" y2="320"/>
+  <text x="354" y="316">i_spm_rd_*</text>
+  <text x="556" y="316" text-anchor="end">o_dr_*</text>
+
+  <!-- ===== u_sram <-> u_array ===== -->
+  <line class="w" x1="760" y1="180" x2="1080" y2="180"/>
+  <text x="764" y="176">i_a_rd_*</text>
+  <text x="1076" y="176" text-anchor="end">o_a_rd_*</text>
+  <line class="w" x1="760" y1="220" x2="1080" y2="220"/>
+  <text x="764" y="216">o_a_rd_data[63:0]</text>
+  <text x="1076" y="216" text-anchor="end">i_a_rd_data[63:0]</text>
+  <line class="w" x1="760" y1="260" x2="1080" y2="260"/>
+  <text x="764" y="256">i_b_rd_*</text>
+  <text x="1076" y="256" text-anchor="end">o_b_rd_*</text>
+  <line class="w" x1="760" y1="300" x2="1080" y2="300"/>
+  <text x="764" y="296">o_b_rd_data[63:0]</text>
+  <text x="1076" y="296" text-anchor="end">i_b_rd_data[63:0]</text>
+
+  <!-- ===== u_sram <-> u_vpu ===== -->
+  <line class="w" x1="760" y1="500" x2="1080" y2="500"/>
+  <text x="764" y="496">i_bias_rd_*</text>
+  <text x="1076" y="496" text-anchor="end">o_bias_rd_*</text>
+  <line class="w" x1="760" y1="540" x2="1080" y2="540"/>
+  <text x="764" y="536">o_bias_rd_data[255:0]</text>
+  <text x="1076" y="536" text-anchor="end">i_bias_rd_data[255:0]</text>
+  <line class="w" x1="760" y1="580" x2="1080" y2="580"/>
+  <text x="764" y="576">i_c_wr_*</text>
+  <text x="1076" y="576" text-anchor="end">o_c_wr_*</text>
+
+  <!-- ===== u_array -> u_vpu (row stream, no ready) ===== -->
+  <line class="w" x1="1120" y1="340" x2="1120" y2="460"/>
+  <text x="1126" y="358">o_row_*</text>
+  <text x="1126" y="450">i_row_*</text>
+
+  <!-- ===== control ports: bundles to u_main_fsm (drawn in the control-flow view) ===== -->
+  <line class="w" x1="270" y1="380" x2="270" y2="470"/>
+  <text x="276" y="400">i_rd_*, o_rd_*</text>
+  <text x="276" y="416">i_wr_*, o_wr_*</text>
+  <text x="276" y="432">o_desc_*</text>
+  <text x="276" y="448">i_soft_clr</text>
+  <text x="270" y="488" text-anchor="middle">u_main_fsm</text>
+  <line class="w" x1="660" y1="640" x2="660" y2="710"/>
+  <text x="666" y="660">i_comp_bank_*, i_comp_active</text>
+  <text x="666" y="676">i_soft_clr</text>
+  <text x="660" y="728" text-anchor="middle">u_main_fsm</text>
+  <line class="w" x1="1210" y1="60" x2="1210" y2="140"/>
+  <text x="1204" y="86" text-anchor="end">i_pe_start, i_matrix_dim</text>
+  <text x="1204" y="102" text-anchor="end">o_pe_done, o_busy</text>
+  <text x="1204" y="118" text-anchor="end">i_soft_clr</text>
+  <text x="1210" y="52" text-anchor="middle">u_main_fsm</text>
+  <line class="w" x1="1200" y1="640" x2="1200" y2="710"/>
+  <text x="1194" y="660" text-anchor="end">i_post_en, i_relu_en</text>
+  <text x="1194" y="676" text-anchor="end">i_quant_m0, i_quant_shift</text>
+  <text x="1194" y="692" text-anchor="end">i_soft_clr</text>
+  <text x="1200" y="728" text-anchor="middle">u_main_fsm</text>
+</svg>

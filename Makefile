@@ -10,7 +10,7 @@ VIVADO  ?= vivado
 TOP     ?= gemm_accel_top
 PART    ?= xc7a100tcsg324-1          # đổi theo board của nhóm
 CLK_NS  ?= 10.0                      # chu kỳ clock ràng buộc (ns)
-GENERICS ?=                          # ví dụ "P=4" hoặc "HAS_CHAIN=1 HAS_PINGPONG=1"
+GENERICS ?=                          # ví dụ "MAX_BURST_BEATS=8" (PE_ARRAY_SIZE chỉ nhận 8)
 SCHEM   ?= rtl                       # rtl: schematic elaborated; synth: sau synth
 SYN_OUT := $(ROOT)/syn/out/$(TOP)
 TOP_SV  := $(firstword $(shell find $(ROOT)/src/rtl -name '$(TOP).sv' 2>/dev/null))
@@ -98,9 +98,7 @@ lint:
 ifneq ($(strip $(LINT_F)),)
 	$(VERILATOR) --lint-only -Wall -F $(LINT_F) --top-module $(LINT_TOP) $(addprefix -G,$(LINT_PARAMS))
 else
-	$(VERILATOR) --lint-only -Wall -F src/rtl/top/top.f --top-module gemm_accel_top -GHAS_CHAIN=0 -GHAS_PINGPONG=0 -GPE_ARRAY_SIZE=8
-	$(VERILATOR) --lint-only -Wall -F src/rtl/top/top.f --top-module gemm_accel_top -GHAS_CHAIN=1 -GHAS_PINGPONG=1 -GPE_ARRAY_SIZE=8
-	$(VERILATOR) --lint-only -Wall -F src/rtl/top/top.f --top-module gemm_accel_top -GHAS_CHAIN=1 -GHAS_PINGPONG=1 -GPE_ARRAY_SIZE=4
+	$(VERILATOR) --lint-only -Wall -F src/rtl/top/top.f --top-module gemm_accel_top -GPE_ARRAY_SIZE=8 -GMAX_BURST_BEATS=16
 endif
 	@echo "lint OK"
 
@@ -145,7 +143,7 @@ schematic: $(SYN_OUT)/flist.f
 
 # ---- tài liệu và mô hình ----
 docs:
-	@for d in docs/system/latex docs/algorithm/latex docs/modules/*/latex; do \
+	@for d in docs/system/latex docs/decisions/latex docs/algorithm/latex docs/modules/*/latex; do \
 	  echo "== $$d"; (cd $$d && latexmk -xelatex -interaction=nonstopmode -quiet main.tex) || exit 1; done
 
 models:

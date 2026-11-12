@@ -1,0 +1,152 @@
+\section{Luồng vận hành}\label{sec:4}
+
+Một tác vụ là một chuỗi descriptor. Ba engine chạy đồng thời khi bank cho phép: \textbf{Đọc}
+(FETCH, kiểm tra, LOAD\_*), \textbf{Tính} (COMPUTE), \textbf{Ghi} (STORE\_C). Trong một descriptor,
+các pha đi theo thứ tự FETCH → kiểm tra → LOAD\_BIAS (nếu \sig{POST_EN}) → LOAD\_A → LOAD\_B
+(trừ khi \sig{REUSE_B}) → COMPUTE → STORE\_C. Engine Đọc làm xong mọi LOAD của descriptor d rồi mới
+FETCH descriptor d+1.
+
+\subsection{Các pha của một descriptor}\label{sec:4.1}
+
+\begin{spectable}{|L{0.14}|L{0.13}|L{0.53}|L{0.2}|}{Các pha của một descriptor}{tab:4-1}{\textbf{Pha} & \textbf{Khối chính} & \textbf{Làm gì} & \textbf{Xong khi}}
+FETCH & DMA & Đọc một descriptor, 16 word, một burst INCR 16 beat. Descriptor không vào scratchpad & FSM nhận đủ 16 word, hoặc lỗi mã 4 \\\hline
+
+Kiểm tra & Main FSM & Kiểm tra descriptor theo mục~\ref{sec:5.2}. Sai: lỗi mã 1 & Đúng một chu kỳ \\\hline
+
+LOAD\_BIAS & DMA & Chép N word bias từ DRAM vào một bank BIAS. Chỉ có khi \sig{POST_EN} = 1 & SRAM nhận word cuối \\\hline
+
+LOAD\_A & DMA & Chép A (M hàng × K/4 word) vào một bank A & SRAM nhận word cuối \\\hline
+
+LOAD\_B & DMA & Chép B (K hàng × N/4 word) vào một bank B. Bỏ qua khi \sig{REUSE_B} = 1 & SRAM nhận word cuối \\\hline
+
+COMPUTE & Array, VPU & Array tính mọi tile; mỗi hàng kết quả đi qua VPU (hậu xử lý hoặc đi thẳng) rồi ghi vào bank C & \sig{o_pe_done} \\\hline
+
+STORE\_C & DMA & Chép C (M·N word) hoặc Y (M·N/4 word) từ bank C ra DRAM & Phản hồi B cuối là OKAY \\\hline
+
+\end{spectable}
+
+\begin{spectable}{|L{0.16}|L{0.1}|L{0.1}|L{0.13}|L{0.13}|L{0.13}|L{0.25}|}{Lệnh DMA của từng pha}{tab:4-2}{\textbf{Pha} & \textbf{Kênh} & \textbf{dst / fmt} & \textbf{rows} & \textbf{rwords} & \textbf{stride} & \textbf{base}}
+FETCH & Đọc & dst = 3 & 1 & 16 & 64 & Con trỏ descriptor \\\hline
+
+LOAD\_BIAS & Đọc & dst = 2 & 1 & N & 4N & \sig{BIAS_ADDR} \\\hline
+
+LOAD\_A & Đọc & dst = 0 & M & K/4 & \sig{LDA} & \sig{A_ADDR} \\\hline
+
+LOAD\_B & Đọc & dst = 1 & K & N/4 & \sig{LDB} & \sig{B_ADDR} \\\hline
+
+STORE\_C & Ghi & fmt = \sig{POST_EN} & M & \sig{POST_EN} ? N/4 : N & \sig{LDC} & \sig{C_ADDR} \\\hline
+
+\end{spectable}
+
+\sig{rows} và \sig{rwords} rộng 6 bit, \sig{stride} rộng 16 bit, tính theo \textbf{word} cho
+\sig{rwords} và theo \textbf{byte} cho \sig{stride}. Khi stride bằng 0, Main FSM phát stride bằng
+đúng độ dài hàng (K cho A, N cho B, 4N cho C INT32, N cho Y). Bias là vector INT32 nên
+\sig{rwords} = N word và độ dài hàng là 4N byte.
+
+\subsection{Luồng một tác vụ}\label{sec:4.2}
+
+Có ba mức "xong": \sig{o_rd_done} và \sig{o_wr_done} của DMA báo xong một lệnh DMA;
+\sig{o_pe_done} báo toàn bộ kết quả của job đã nằm trong bank C; \sig{STATUS}.DONE báo descriptor có
+\sig{LAST} = 1 đã ghi xong DRAM và không có lỗi. Chỉ mức cuối cùng hiện ra cho CPU.
+
+\begin{figure}[H]\centering
+\begin{wave}{12}{-14.5}
+\sname{0}{s\_axi\_wvalid (CTRL)} \pulse{0}{-0.2}
+\sname{-1.3}{o\_start\_pulse} \pulse{2}{-1.5}
+\sname{-2.6}{STATUS.BUSY} \lo{0}{2}{-2.8} \hi{2}{12}{-2.8}
+\sname{-3.9}{Engine Đọc} \bus{2}{3}{-3.9}{FETCH d0} \bus{3}{4}{-3.9}{chk} \bus{4}{6}{-3.9}{LOAD d0} \bus{6}{7}{-3.9}{FETCH d1} \bus{7}{8}{-3.9}{chk} \bus{8}{10}{-3.9}{LOAD d1} \bus{10}{12}{-3.9}{FETCH d2 …}
+\sname{-5.2}{Engine Tính} \bus{6}{9}{-5.2}{COMPUTE d0} \bus{10}{12}{-5.2}{COMPUTE d1}
+\sname{-6.5}{Engine Ghi} \bus{9}{12}{-6.5}{STORE\_C d0}
+\sname{-7.8}{o\_comp\_bank\_a} \lo{0}{10}{-8.0} \hi{10}{12}{-8.0}
+\sname{-9.1}{o\_rd\_bank (A)} \lo{0}{8}{-9.3} \hi{8}{12}{-9.3}
+\sname{-10.4}{o\_desc\_done\_cnt} \bus{0}{12}{-10.4}{0}
+\sname{-11.7}{o\_done\_pulse} \lo{0}{12}{-11.9}
+\sname{-13.0}{STATUS.DONE} \lo{0}{12}{-13.2}
+\end{wave}
+\caption{Hai descriptor đầu của một chuỗi. Ba engine chạy chồng: trong lúc engine Tính xử lý
+descriptor d0, engine Đọc FETCH, kiểm tra và nạp d1 vào bank kia; khi COMPUTE d0 xong, engine Ghi
+chép kết quả d0 ra DRAM trong lúc engine Tính xử lý d1. Trục thời gian là trục pha, không theo tỉ lệ
+số chu kỳ thực (riêng \sigc{o_start_pulse} ở chu kỳ 2 theo hình 6-1 của tài liệu Register File).
+d0 dùng bank A 0 nên \sigc{o_comp_bank_a} = 0 suốt COMPUTE d0, trong khi LOAD d1 ghi bank 1
+(\sigc{o_rd_bank} = 1): hai phía luôn ở hai bank khác nhau. \sigc{o_rd_bank} không có nghĩa
+trong FETCH vì descriptor không vào scratchpad (D-31)}\label{fig:4-1}
+\end{figure}
+
+Ba engine được phép làm ba job khác nhau trong cùng một chu kỳ. Phần cứng được phép bắt đầu một pha
+muộn hơn điều kiện ở mục~\ref{sec:5.3}, không bao giờ sớm hơn. Khi các pha chồng nhau,
+\sig{PERF_LOAD} + \sig{PERF_COMPUTE} + \sig{PERF_STORE} có thể lớn hơn \sig{PERF_TOTAL}; phần chênh
+là thời gian chạy chồng.
+
+\subsection{Quyền truy cập scratchpad}\label{sec:4.3}
+
+\begin{spectable}{|L{0.18}|L{0.2}|L{0.2}|L{0.2}|L{0.22}|}{Ai truy cập buffer trong pha của một job}{tab:4-3}{\textbf{Pha} & \textbf{A} & \textbf{B} & \textbf{BIAS} & \textbf{C}}
+FETCH, kiểm tra & — & — & — & — \\\hline
+
+LOAD\_BIAS & — & — & DMA ghi & — \\\hline
+
+LOAD\_A & DMA ghi & — & — & — \\\hline
+
+LOAD\_B & — & DMA ghi & — & — \\\hline
+
+COMPUTE & Array đọc & Array đọc & VPU đọc & VPU ghi \\\hline
+
+STORE\_C & — & — & — & DMA đọc \\\hline
+
+\end{spectable}
+
+\paragraph{Quyền truy cập}\label{par:4-4}
+\begin{itemize}
+\item Bảng trên là quyền của một job. Job khác có thể đang ở pha khác, trên bank kia
+\item Mỗi bank có tối đa một bên truy cập trong một chu kỳ. Hai bank của cùng một buffer truy cập độc lập. Vì vậy mỗi bank chỉ cần SRAM một cổng
+\item Điều kiện được bắt đầu một pha nằm ở mục~\ref{sec:5.3}
+\item Module SRAM có assertion (chỉ mô phỏng) phát hiện hai phía chạm cùng một sub-bank trong khi \sig{i_comp_active} = 1. Trong RTL, khi trùng thì DMA thắng, nên hành vi luôn xác định (quyết định baseline D-12)
+\end{itemize}
+
+\subsection{Xử lý lỗi}\label{sec:4.4}
+
+\paragraph{Lỗi}\label{par:4-5}
+\begin{itemize}
+\item \sig{DESC_PTR} không căn 64 byte: \sig{ERR_CODE} = 1, không truy cập bus, không truy cập scratchpad
+\item Descriptor sai sau FETCH: \sig{ERR_CODE} = 1. Không pha nào tiếp của job đó được bắt đầu
+\item Lỗi AXI của FETCH: \sig{ERR_CODE} = 4. Lỗi AXI của LOAD\_*: mã 2. Lỗi AXI của STORE\_C: mã 3. DMA của kênh lỗi ngừng phát burst mới, nhận đủ beat R hoặc phản hồi B của burst đã phát, rồi báo lỗi
+\item Gọi f là descriptor có thứ tự nhỏ nhất bị lỗi. Không pha nào của descriptor thứ ≥ f được bắt đầu. Pha đã bắt đầu thì chạy tới hết. Các descriptor đứng trước f chạy xong, kể cả STORE\_C. Khi mọi engine đã yên: ERROR = 1, \sig{ERR_DESC_ADDR} = địa chỉ của f, \sig{DESC_DONE_CNT} = f. Vùng đích của job ≥ f không xác định
+\item Khi nhiều lỗi xảy ra, Main FSM giữ lỗi có \textbf{chỉ số descriptor nhỏ nhất}; nếu cùng chỉ số thì giữ lỗi ghi nhận trước. Chỉ một \sig{ERR_CODE} được báo cho CPU
+\item Array và VPU không có đầu ra lỗi. Local SRAM không có đầu ra lỗi. Mọi mã lỗi đều do Main FSM phát, từ kết quả kiểm tra descriptor hoặc từ \sig{o_rd_error} / \sig{o_wr_error} của DMA
+\item Beat dữ liệu của một burst lỗi vẫn được ghi vào scratchpad; nội dung đó không được dùng vì không pha nào tiếp theo được bắt đầu
+\end{itemize}
+
+\subsection{Reset và soft reset}\label{sec:4.5}
+
+\paragraph{Reset}\label{par:4-6}
+\begin{itemize}
+\item \sig{rst_n} tích cực mức thấp, bất đồng bộ. \sig{gemm_accel_top} có bộ đồng bộ 2 flip-flop (bật bất đồng bộ, nhả đồng bộ với \sig{clk}); đầu ra \sig{rst_n_sync} cấp cho cả sáu module
+\item \sig{rst_n_sync} = 0 đưa mọi trạng thái về giá trị reset. Nội dung scratchpad không bị xóa, coi là không xác định
+\item Soft reset không đi vào chân reset; nó là xung xóa đồng bộ \sig{soft_clr} một chu kỳ do Main FSM phát tới Register File, DMA, SRAM, Array, VPU. Main FSM tự reset trạng thái của nó ở cùng chu kỳ và không có port \sig{i_soft_clr}
+\item Phạm vi soft reset: FSM, DMA, Array, VPU, phần điều khiển SRAM; \sig{STATUS}, \sig{PERF_*}, \sig{ERR_DESC_ADDR} và \sig{DESC_DONE_CNT}. \sig{DESC_PTR} và các thanh ghi RW giữ nguyên. Nội dung scratchpad không xác định
+\item Khi có yêu cầu soft reset: không pha mới nào bắt đầu; không phát lệnh DMA mới. FSM abort kênh đọc nếu kênh đó đang bận và kênh ghi nếu kênh đó đang bận. Burst đã cam kết (đã bật VALID hoặc đã gửi beat W) chạy hết; lệnh kết thúc bằng done hoặc error. Abort không phải là lỗi của tác vụ
+\item \sig{soft_clr} phát khi cả hai kênh DMA đã rảnh (\sig{i_rd_busy} = 0 và \sig{i_wr_busy} = 0). COMPUTE đang chạy không được chờ: \sig{soft_clr} hủy array và VPU ngay
+\item Nếu yêu cầu soft reset đến đúng chu kỳ một kênh DMA báo xong, kênh đó coi như đã rảnh
+\item Trong cả chuỗi soft reset: BUSY = 1 và \sig{STATUS} đọc ra 0x0000\_0002; START và SOFT\_RESET ghi lặp lại bị bỏ qua
+\item Sau \sig{soft_clr}: \sig{STATUS} = 0; tác vụ bị hủy không báo DONE cũng không báo ERROR; vùng đích trong DRAM của tác vụ bị hủy không xác định
+\end{itemize}
+
+\begin{figure}[H]\centering
+\begin{wave}{11}{-11.5}
+\sname{0}{s\_axi\_wvalid (CTRL)} \pulse{0}{-0.2}
+\sname{-1.3}{o\_soft\_req} \pulse{2}{-1.5}
+\sname{-2.6}{Trạng thái FSM} \bus{0}{3}{-2.6}{T\_RUN} \bus{3}{7}{-2.6}{T\_SOFT} \bus{7}{8}{-2.6}{T\_CLR} \bus{8}{11}{-2.6}{T\_IDLE}
+\sname{-3.9}{o\_rd\_abort} \lo{0}{3}{-4.1} \hi{3}{6}{-4.1} \lo{6}{11}{-4.1}
+\sname{-5.2}{i\_rd\_busy} \hi{0}{6}{-5.4} \lo{6}{11}{-5.4}
+\sname{-6.5}{i\_rd\_done} \pulse{5}{-6.7}
+\sname{-7.8}{o\_soft\_busy} \lo{0}{3}{-8.0} \hi{3}{8}{-8.0} \lo{8}{11}{-8.0}
+\sname{-9.1}{o\_soft\_clr} \pulse{7}{-9.3}
+\sname{-10.4}{STATUS} \bus{0}{8}{-10.4}{0x…0002} \bus{8}{11}{-10.4}{0x…0000}
+\end{wave}
+\caption{Chuỗi soft reset. Bắt tay AW, W của lệnh ghi \sigc{CTRL} có SOFT\_RESET = 1 ở chu kỳ 0;
+lệnh ghi có hiệu lực ở cạnh clock cuối chu kỳ 1 (\sigc{wr_fire}); Register File phát
+\sigc{o_soft_req} ở chu kỳ 2 (cùng mốc với \sigc{o_start_pulse} trong hình 6-1 của tài liệu
+Register File); FSM vào \sigc{T_SOFT} và abort kênh đọc đang bận; burst đã cam kết
+chạy hết và báo \sigc{i_rd_done} ở chu kỳ 5; khi không engine nào còn chờ lệnh DMA, FSM vào
+\sigc{T_CLR} và phát \sigc{o_soft_clr} một chu kỳ, rồi về \sigc{T_IDLE} với \sigc{STATUS} = 0.
+Không có DONE và không có ERROR}\label{fig:4-2}
+\end{figure}
