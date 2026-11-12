@@ -10,9 +10,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 module gemm_register_file #(
-  parameter int P = 8,
-  parameter int HAS_CHAIN = 1,
-  parameter int HAS_PINGPONG = 1
+  parameter int P = 8   // chỉ nhận 8 (D-04); ghi vào HW_CONFIG[7:0]
 ) (
   input  logic              clk,
   input  logic              rst_n,
@@ -37,16 +35,7 @@ module gemm_register_file #(
   input  logic              s_axi_rready,
   // ---- Register File -> FSM
   output logic              o_start_pulse,
-  output logic [1:0]        o_start_kind,
   output logic              o_soft_req,
-  output logic [31:0]       o_cfg_dim,
-  output logic [31:0]       o_cfg_a_addr,
-  output logic [31:0]       o_cfg_b_addr,
-  output logic [31:0]       o_cfg_c_addr,
-  output logic [31:0]       o_cfg_post_ctrl,
-  output logic [31:0]       o_cfg_bias_addr,
-  output logic [31:0]       o_cfg_qm0,
-  output logic [31:0]       o_cfg_qshift,
   output logic [31:0]       o_cfg_desc_ptr,
   // ---- FSM -> Register File
   input  logic              i_soft_busy,
@@ -70,16 +59,7 @@ module gemm_register_file #(
   assign s_axi_rresp = '0;
   assign s_axi_rvalid = '0;
   assign o_start_pulse = '0;
-  assign o_start_kind = '0;
   assign o_soft_req = '0;
-  assign o_cfg_dim = '0;
-  assign o_cfg_a_addr = '0;
-  assign o_cfg_b_addr = '0;
-  assign o_cfg_c_addr = '0;
-  assign o_cfg_post_ctrl = '0;
-  assign o_cfg_bias_addr = '0;
-  assign o_cfg_qm0 = '0;
-  assign o_cfg_qshift = '0;
   assign o_cfg_desc_ptr = '0;
   // ---- hết STUB ----
 

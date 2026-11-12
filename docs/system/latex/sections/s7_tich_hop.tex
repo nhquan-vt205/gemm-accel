@@ -1,0 +1,139 @@
+\section{Tích hợp các module}\label{sec:6}
+
+Bản chụp lúc START chỉ gồm \sig{DESC_PTR} và chỉ đi vào Main FSM. FSM dựng job từ descriptor, cấp
+cấu hình của job đang tính cho array và VPU, cấp bank cho SRAM, và cấp địa chỉ, số hàng, số word,
+stride cùng bank trong từng lệnh DMA.
+
+\subsection{Kết nối giữa các module}\label{sec:6.1}
+
+\begin{spectable}{|L{0.3}|L{0.3}|L{0.4}|}{Kết nối giữa các module}{tab:6-1}{\textbf{Từ} & \textbf{Tới} & \textbf{Tín hiệu}}
+RF \sig{o_start_pulse}, \sig{o_soft_req}, \sig{o_cfg_desc_ptr} & FSM \sig{i_start_pulse}, \sig{i_soft_req}, \sig{i_cfg_desc_ptr} & Xung start, xung soft reset và \sig{DESC_PTR} \\\hline
+
+FSM \sig{o_done_pulse}, \sig{o_err_pulse}, \sig{o_err_code}, \sig{o_perf_load}, \sig{o_perf_comp}, \sig{o_perf_store}, \sig{o_soft_busy}, \sig{o_err_desc_addr}, \sig{o_desc_done_cnt} & RF \sig{i_*} cùng tên & Trạng thái, mã lỗi, bộ đếm hiệu năng \\\hline
+
+FSM \sig{o_soft_clr} & \sig{i_soft_clr} của RF, DMA, SRAM, Array, VPU & Xung xóa đồng bộ một chu kỳ; FSM không có \sig{i_soft_clr} \\\hline
+
+FSM \sig{o_rd_start}, \sig{o_rd_dst}, \sig{o_rd_base}, \sig{o_rd_rows}, \sig{o_rd_rwords}, \sig{o_rd_stride}, \sig{o_rd_bank}, \sig{o_rd_abort} & DMA \sig{i_rd_*} cùng tên & Lệnh kênh đọc \\\hline
+
+FSM \sig{o_wr_start}, \sig{o_wr_fmt}, \sig{o_wr_base}, \sig{o_wr_rows}, \sig{o_wr_rwords}, \sig{o_wr_stride}, \sig{o_wr_bank}, \sig{o_wr_abort} & DMA \sig{i_wr_*} cùng tên & Lệnh kênh ghi \\\hline
+
+DMA \sig{o_rd_busy}, \sig{o_rd_done}, \sig{o_rd_error}, \sig{o_desc_valid}, \sig{o_desc_idx}, \sig{o_desc_data}, \sig{o_wr_busy}, \sig{o_wr_done}, \sig{o_wr_error} & FSM \sig{i_*} cùng tên & Trạng thái hai kênh và 16 word descriptor \\\hline
+
+DMA \sig{o_spm_wr_valid}, \sig{o_spm_wr_buf}, \sig{o_spm_wr_bank}, \sig{o_spm_wr_addr}, \sig{o_spm_wr_data} & SRAM \sig{i_dw_valid}, \sig{i_dw_buf}, \sig{i_dw_bank}, \sig{i_dw_addr}, \sig{i_dw_data} & Word dữ liệu, địa chỉ, buffer, bank \\\hline
+
+DMA \sig{o_spm_rd_valid}, \sig{o_spm_rd_bank}, \sig{o_spm_rd_addr} & SRAM \sig{i_dr_valid}, \sig{i_dr_bank}, \sig{i_dr_addr} & Yêu cầu đọc bank C \\\hline
+
+SRAM \sig{o_dw_ready}, \sig{o_dr_ready}, \sig{o_dr_rvalid}, \sig{o_dr_rdata} & DMA \sig{i_spm_wr_ready}, \sig{i_spm_rd_ready}, \sig{i_spm_rd_rvalid}, \sig{i_spm_rd_rdata} & \sig{o_dw_ready} và \sig{o_dr_ready} là hằng 1; dữ liệu về sau đúng một chu kỳ \\\hline
+
+FSM \sig{o_pe_start}, \sig{o_comp_dim} & Array \sig{i_pe_start}, \sig{i_matrix_dim} & Lệnh bắt đầu COMPUTE và \{8'h00, K, N, M\} \\\hline
+
+Array \sig{o_pe_done}, \sig{o_busy} & FSM \sig{i_pe_done}, \sig{i_pe_busy} & \\\hline
+
+FSM \sig{o_comp_post_en}, \sig{o_comp_relu_en}, \sig{o_comp_qm0}, \sig{o_comp_qshift} & VPU \sig{i_post_en}, \sig{i_relu_en}, \sig{i_quant_m0}, \sig{i_quant_shift} & Cấu hình hậu xử lý của job đang tính \\\hline
+
+FSM \sig{o_comp_bank_a}, \sig{o_comp_bank_b}, \sig{o_comp_bank_bias}, \sig{o_comp_bank_c}, \sig{o_comp_active} & SRAM \sig{i_comp_bank_a}, \sig{i_comp_bank_b}, \sig{i_comp_bank_bias}, \sig{i_comp_bank_c}, \sig{i_comp_active} & Bank cấp cho phía COMPUTE \\\hline
+
+Array \sig{o_a_rd_en}, \sig{o_a_rd_row}, \sig{o_a_rd_k}, \sig{o_b_rd_en}, \sig{o_b_rd_k}, \sig{o_b_rd_col} & SRAM \sig{i_a_rd_*}, \sig{i_b_rd_*}; về Array \sig{o_a_rd_data}, \sig{o_b_rd_data} & Đọc vector 64 bit; dữ liệu trả về trễ đúng một chu kỳ. \sig{o_a_rd_en} luôn bằng \sig{o_b_rd_en} \\\hline
+
+Array \sig{o_row_valid}, \sig{o_row_idx}, \sig{o_row_col}, \sig{o_row_data}, \sig{o_row_mask} & VPU \sig{i_row_valid}, \sig{i_row_idx}, \sig{i_row_col}, \sig{i_row_data}, \sig{i_row_mask} & Luồng hàng 256 bit; \textbf{không} có đường ready \\\hline
+
+VPU \sig{o_bias_rd_en}, \sig{o_bias_rd_col}, \sig{o_c_wr_en}, \sig{o_c_wr_fmt}, \sig{o_c_wr_row}, \sig{o_c_wr_col}, \sig{o_c_wr_data}, \sig{o_c_wr_mask} & SRAM \sig{i_bias_rd_*}, \sig{i_c_wr_*}; về VPU \sig{o_bias_rd_data} & Đọc bias 256 bit, ghi bank C 256 bit có mask \\\hline
+
+top \sig{s_axi_*} & RF & 17 tín hiệu, đi thẳng, không logic chèn giữa \\\hline
+
+DMA \sig{m_axi_*} & top & 25 tín hiệu, đi thẳng, không logic chèn giữa \\\hline
+
+\end{spectable}
+
+\subsection{Quy tắc tích hợp}\label{sec:6.2}
+
+\paragraph{Tích hợp}\label{par:6-2}
+\begin{itemize}
+\item Tham số P phải thống nhất giữa Array, VPU, SRAM và trường P của \sig{HW_CONFIG}; baseline chốt P = 8 cho cả bốn chỗ
+\item \sig{L_VPU} của Array phải bằng LAT của VPU, cả hai lấy từ \sig{gemm_pkg::VPU_LATENCY} = 4. Mỗi module kiểm điều kiện này lúc elaboration và phát \sig{\$error} nếu sai
+\item Top truyền giá trị tham số đã chọn xuống các module, không phụ thuộc mặc định riêng của từng module
+\item Top chỉ đấu nối và chứa bộ đồng bộ reset 2 flip-flop; không có logic dữ liệu, không có FSM, độ trễ xuyên qua top là 0 chu kỳ
+\item \sig{rst_n_sync} là reset duy nhất cấp cho cả sáu module. \sig{soft_clr} đi tới năm module (RF, DMA, SRAM, Array, VPU) và không đi vào chân reset của bất kỳ flip-flop nào
+\item Thiết kế có đúng ba nhóm đường tổ hợp từ input tới output của module: (1) VPU: \sig{o_bias_rd_en} = \sig{i_row_valid} \& \sig{i_post_en} và \sig{o_bias_rd_col} = \sig{i_row_col}; (2) DMA: \sig{m_axi_rready} = trạng thái RD\_DATA ∧ \sig{i_spm_wr_ready}, và vì \sig{o_dw_ready} là hằng 1 nên \sig{m_axi_rready} không phụ thuộc input AXI; (3) DMA: \sig{o_spm_wr_valid}, \sig{o_spm_wr_data} và (với FETCH) \sig{o_desc_valid}, \sig{o_desc_data} tổ hợp từ \sig{m_axi_rvalid}, \sig{m_axi_rdata} (đi vào SRAM hoặc bộ đệm descriptor của Main FSM, kết thúc ở thanh ghi/RAM). Ràng buộc I/O và kiểm tra vòng tổ hợp trong STA/lint phải bao phủ cả ba. Ready của Register File (\sig{s_axi_awready}, \sig{s_axi_wready}, \sig{s_axi_arready}) chỉ phụ thuộc thanh ghi nội bộ, không phụ thuộc tổ hợp vào input. Mọi output khác của mọi module đều đã qua thanh ghi
+\item Không có đường tổ hợp từ input tới output trên cùng một cổng AXI
+\end{itemize}
+
+\subsection{Quy tắc giao tiếp}\label{sec:6.3}
+
+\begin{spectable}{|L{0.24}|L{0.76}|}{Quy ước bắt tay giữa các module}{tab:6-3}{\textbf{Loại giao tiếp} & \textbf{Quy ước}}
+Xung một chu kỳ & \sig{o_start_pulse}, \sig{o_soft_req}, \sig{o_soft_clr}, \sig{o_done_pulse}, \sig{o_err_pulse}, \sig{o_rd_done}, \sig{o_rd_error}, \sig{o_wr_done}, \sig{o_wr_error}, \sig{o_pe_done}, \sig{o_pe_start}: bằng 1 đúng một chu kỳ, bên nhận phải bắt ngay ở chu kỳ đó \\\hline
+
+Lệnh start & \sig{o_rd_start} và \sig{o_wr_start} là xung một chu kỳ; payload lệnh (\sig{base}, \sig{rows}, \sig{rwords}, \sig{stride}, \sig{bank}, \sig{dst}/\sig{fmt}) phải hợp lệ \textbf{ở đúng chu kỳ đó}. Start khi kênh đang bận bị bỏ qua \\\hline
+
+Mức (level) & \sig{o_rd_abort}, \sig{o_wr_abort}, \sig{o_comp_active}, \sig{o_comp_bank_*}, \sig{o_soft_busy}, \sig{i_rd_busy}, \sig{i_wr_busy}, \sig{i_pe_busy}: tín hiệu mức, giữ ổn định suốt khoảng có hiệu lực \\\hline
+
+Cấu hình job & \sig{o_comp_dim}, \sig{o_comp_post_en}, \sig{o_comp_relu_en}, \sig{o_comp_qm0}, \sig{o_comp_qshift}: giữ ổn định từ trước \sig{o_pe_start} tới khi \sig{o_pe_done}. Assertion của VPU kiểm \sig{\$stable} trong khi đường ống còn bit valid \\\hline
+
+Valid không ready & Luồng hàng Array → VPU (\sig{o_row_valid} …) và luồng descriptor DMA → FSM (\sig{o_desc_valid} …) không có đường ready: bên nhận \textbf{bắt buộc} nhận mỗi chu kỳ có valid. Điều này an toàn vì VPU có thông lượng 1 hàng/chu kỳ và bộ đệm descriptor của FSM luôn trống khi FETCH chạy \\\hline
+
+Valid có ready & Đường DMA ↔ SRAM dùng valid/ready, nhưng \sig{o_dw_ready} và \sig{o_dr_ready} là hằng 1, nên không bao giờ có backpressure. Hiện thực vẫn phải giữ đúng ngữ nghĩa valid/ready \\\hline
+
+Đọc SRAM & Mọi cổng đọc SRAM có độ trễ \textbf{đúng 1 chu kỳ}: dữ liệu hợp lệ ở chu kỳ ngay sau chu kỳ có \sig{*_rd_en}. Không có đường tổ hợp từ \sig{*_rd_en} tới dữ liệu \\\hline
+
+\end{spectable}
+
+\subsection{Xử lý lỗi giữa các module}\label{sec:6.4}
+
+\begin{spectable}{|L{0.22}|L{0.18}|L{0.6}|}{Nguồn lỗi và đường báo lỗi}{tab:6-4}{\textbf{Khối} & \textbf{Có lỗi?} & \textbf{Cách báo}}
+Register File & Không & Mọi truy cập AXI4-Lite trả OKAY, kể cả offset dự trữ. RF chỉ \emph{lưu} \sig{ERR_CODE} do FSM cấp \\\hline
+
+Main FSM & Có & Nguồn duy nhất của \sig{ERR_CODE}. Phát mã 1 từ kết quả kiểm tra descriptor; chuyển \sig{o_rd_error} thành mã 2 hoặc 4 tùy pha, \sig{o_wr_error} thành mã 3 \\\hline
+
+DMA & Có & \sig{o_rd_error} và \sig{o_wr_error}, mỗi cái một xung. Không mang mã lỗi: FSM quyết mã theo pha đang chạy \\\hline
+
+Local SRAM & Không & Không có output lỗi. Vi phạm địa chỉ và vi phạm bank chỉ bị bắt bằng assertion mô phỏng \\\hline
+
+Systolic Array & Không & Không có output lỗi. Giả định M, N, K đã hợp lệ vì FSM kiểm trước khi phát \sig{o_pe_start} \\\hline
+
+VPU & Không & Không có output lỗi. Tràn không xảy ra trên miền hợp lệ; bước tạo Y saturate thay vì báo lỗi \\\hline
+
+\end{spectable}
+
+\paragraph{Lan truyền lỗi}\label{par:6-5}
+\begin{itemize}
+\item DMA của kênh lỗi ngừng phát burst mới, nhận hết beat R hoặc phản hồi B của burst đã cam kết, rồi phát một xung lỗi. Beat dữ liệu của burst lỗi vẫn được ghi vào scratchpad; nội dung đó không được dùng
+\item FSM ghi nhận lỗi vào một ô duy nhất gồm \sig{err_v}, \sig{err_idx}, \sig{err_code}, \sig{err_addr}; khi có lỗi mới, chỉ ghi đè nếu \sig{err_idx} nhỏ hơn giá trị đang giữ. Nhờ vậy \sig{ERR_CODE} và \sig{ERR_DESC_ADDR} luôn ứng với descriptor lỗi sớm nhất theo thứ tự chuỗi
+\item Gọi f là descriptor lỗi sớm nhất. Sau khi có lỗi, FSM không bắt đầu pha nào của descriptor ≥ f (không lệnh DMA, không \sig{o_pe_start} cho chúng); các descriptor đứng trước f vẫn chạy tới hết, kể cả STORE\_C. Pha đang chạy chạy tới hết. Khi hệ yên — engine Đọc đã dừng và không chờ DMA, engine Tính không ở C\_RUN, engine Ghi rảnh và không còn job nào có chỉ số < f chờ tính hoặc ghi — FSM phát \sig{o_err_pulse}. Điều kiện chính xác nằm ở mục Kết thúc tác vụ của tài liệu Main FSM; nhìn từ bên ngoài, lúc đó \sig{i_rd_busy} = \sig{i_wr_busy} = \sig{i_pe_busy} = 0
+\item Array và VPU không bị thông báo về lỗi; chúng chỉ ngừng vì không nhận thêm \sig{o_pe_start}. Nếu lỗi xảy ra trong lúc COMPUTE đang chạy, COMPUTE vẫn chạy tới \sig{o_pe_done} rồi hệ thống mới yên
+\item Lỗi không bao giờ làm treo: mọi pha đang chạy đều có điều kiện kết thúc hữu hạn (burst AXI kết thúc bằng \sig{rlast} hoặc \sig{bvalid}; COMPUTE kết thúc sau số chu kỳ xác định)
+\end{itemize}
+
+\subsection{Kiểm chứng ở mức hệ thống}\label{sec:6.5}
+
+\begin{spectable}{|L{0.12}|L{0.88}|}{Điểm kiểm chứng mức hệ thống}{tab:6-6}{\textbf{ID} & \textbf{Nội dung}}
+SYS-01 & Nội dung DRAM sau một tác vụ khớp từng bit với mô hình tham chiếu ở mục~\ref{sec:3.5}, áp dụng lần lượt cho từng descriptor theo thứ tự chuỗi \\\hline
+
+SYS-02 & Port top-level đúng 44 tín hiệu, đúng tên, độ rộng và chiều như bảng~\ref{tab:1-6} và bảng~\ref{tab:1-7}; không có port nào khác \\\hline
+
+SYS-03 & Mỗi descriptor được FETCH đúng một lần, bằng một burst 16 beat, theo đúng thứ tự chuỗi \\\hline
+
+SYS-04 & Pha STORE\_C ra DRAM đúng theo thứ tự descriptor; \sig{DESC_DONE_CNT} tăng đơn điệu từng đơn vị \\\hline
+
+SYS-05 & Tại mọi chu kỳ, mỗi bank của mỗi buffer có tối đa một bên truy cập (assertion AS-02 của SRAM) \\\hline
+
+SYS-06 & Sau khi \sig{o_pe_done}, đường ống VPU không còn bit valid nào (assertion AS-07 của VPU) \\\hline
+
+SYS-07 & \sig{o_done_pulse} và \sig{o_err_pulse} không bao giờ cùng một chu kỳ; sau khi START được chấp nhận, đúng một trong ba bit BUSY, DONE, ERROR bằng 1 ở mọi lần đọc \sig{STATUS} \\\hline
+
+SYS-08 & Khi lỗi, \sig{ERR_DESC_ADDR} và \sig{DESC_DONE_CNT} ứng với descriptor lỗi sớm nhất; không pha nào của descriptor ≥ f đã bắt đầu \\\hline
+
+SYS-09 & Chuỗi soft reset luôn kết thúc: từ \sig{o_soft_req} tới \sig{o_soft_clr} là hữu hạn chu kỳ, và sau đó \sig{STATUS} = 0 mà không có DONE và không có ERROR \\\hline
+
+SYS-10 & Kết quả không phụ thuộc mức độ chạy chồng: chạy cùng chuỗi với bus chậm (nhiều bubble AXI) và bus nhanh cho cùng nội dung DRAM \\\hline
+
+SYS-11 & \sig{DESC_PTR} không căn 64 byte kết thúc tác vụ với \sig{ERR_CODE} = 1 mà \textbf{không} có giao dịch AXI master nào và không có truy cập scratchpad nào \\\hline
+
+SYS-12 & Mọi truy cập AXI4-Lite, kể cả vào offset dự trữ 0x08 … 0x24, trả \sig{s_axi_bresp} / \sig{s_axi_rresp} = 2'b00 \\\hline
+
+\end{spectable}
+
+\begin{notebox}[Phạm vi]
+Bảng~\ref{tab:6-6} là \textbf{yêu cầu kiểm chứng} của tài liệu thiết kế, không phải báo cáo kết quả.
+Bộ tài liệu baseline này là tài liệu; nó chưa được đối chiếu với RTL và chưa có mô phỏng nào được
+chạy.
+\end{notebox}

@@ -1,18 +1,18 @@
-% Trang bìa và mục lục
+% Trang bìa và mục lục — theo mẫu spec_1/system/latex/frontmatter/titlepage.tex
 \thispagestyle{empty}
 \begin{tikzpicture}[remember picture,overlay]
   \fill[cream] (current page.north west) rectangle (current page.south east);
 \end{tikzpicture}
 
 \vspace*{3cm}
-{\headfont\bfseries\small\color{brand}\MakeUppercase{Đặc tả hệ thống · Phiên bản 1.0}\par}
+{\headfont\bfseries\small\color{brand}\MakeUppercase{Đặc tả hệ thống · Baseline v1.0}\par}
 \vspace{0.6cm}
 \begin{tikzpicture}[baseline=(b.north)]\node[fill=brand,minimum width=0.25cm,minimum height=3.6cm,inner sep=0pt](b){};\end{tikzpicture}\hspace{0.45cm}\begin{minipage}[t]{0.9\linewidth}
 {\headfont\bfseries\fontsize{30}{36}\selectfont\color{brand}Bộ tăng tốc GEMM INT8\par}
 \vspace{4pt}
 {\headfont\bfseries\fontsize{30}{36}\selectfont\color{brand}trên Chipyard SoC\par}
 \vspace{10pt}
-{\large\color{ink}Systolic array Output-Stationary · DMA · Khối hậu xử lý vector (VPU)\par}
+{\large\color{ink}Systolic array Output-Stationary 8×8 · DMA theo chuỗi descriptor · Scratchpad ping-pong · VPU\par}
 \vspace{4pt}
 {\normalsize\color{muted}Đề tài: Thiết kế bộ tăng tốc AI tích hợp trong vi xử lý RISC-V\par}
 \end{minipage}
@@ -21,10 +21,11 @@
 \begingroup\small
 \begin{tabular}{@{}L{0.18}L{0.8}@{}}
 \toprule
-\textbf{Phiên bản} & 1.0 — 05/11/2026 \\
-\textbf{Nội dung} & Kiến trúc, chức năng, mô hình lập trình, luồng vận hành và port top-level của \sig{gemm_accel_top} \\
-\textbf{Port top-level} & \textbf{Đã khóa.} Thay đổi về sau chỉ xảy ra ở port nội bộ, được mô tả trong spec của từng module \\
-\textbf{Phần bổ sung} & DMA theo chuỗi descriptor và scratchpad ping-pong (mục~\ref{sec:7}): làm nếu còn thời gian, không làm thay đổi port top-level hay các thanh ghi đã có \\
+\textbf{Phiên bản} & baseline v1.0 — 11/11/2026 \\
+\textbf{Nguồn} & Hợp nhất \sig{spec_1} và \sig{spec_2}; mọi mâu thuẫn đã được giải thành một lựa chọn baseline duy nhất, ghi trong tài liệu quyết định (\sig{decisions/latex/main.tex}) \\
+\textbf{Nội dung} & Kiến trúc, chức năng, mô hình lập trình, luồng vận hành, clock/reset và port top-level của \sig{gemm_accel_top} \\
+\textbf{Kiến trúc đã chốt} & Sáu khối chức năng; DMA theo chuỗi descriptor; scratchpad ping-pong hai bank cho A, B, C, BIAS; systolic array 8×8 PE; \sig{clk} 100 MHz; đầu vào INT8, tích lũy và đầu ra C INT32 \\
+\textbf{Port top-level} & \textbf{Đã khóa} theo \sig{spec_1}: 44 port (clock, reset, AXI4-Lite slave 17 tín hiệu, AXI4-Full master 25 tín hiệu). Không thêm, bớt hay đổi tên \\
 \bottomrule
 \end{tabular}
 \endgroup

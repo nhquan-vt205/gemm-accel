@@ -31,3 +31,5 @@ __pycache__/
 .DS_Store
 .vscode/
 *.swp
+# cache Inkscape khi build LaTeX có SVG
+docs/**/latex/svg-inkscape/

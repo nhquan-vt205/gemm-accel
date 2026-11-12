@@ -1,46 +1,89 @@
+% =====================================================================
+% Spec module — gemm_vpu (spec baseline v1.0)
+% Bố cục mục theo spec_1/modules/vpu/latex/main.tex
+% =====================================================================
 \documentclass[10pt,a4paper]{article}
-\newcommand{\ModHeader}{gemm\_vpu}
-\input{../../../common/timer_style.tex}
+\newcommand{\DocHeader}{Spec module · gemm\_vpu}
+\newcommand{\DocVersion}{baseline v1.0 · theo đặc tả hệ thống baseline v1.0}
+\newcommand{\DocFooter}{Bộ tăng tốc GEMM INT8 trên Chipyard SoC — spec baseline}
+\newcommand{\DocPdfTitle}{Spec module gemm_vpu baseline v1.0}
+\input{../../../common/spec_style.tex}
 \begin{document}
 {\Large\bfseries ĐẶC TẢ THIẾT KẾ gemm\_vpu}\par
+\vspace{2pt}
+{\small\color{muted}Module của \sig{gemm_accel_top} · instance \sig{u_vpu}}\par
 \tableofcontents
 \clearpage
+
+% ===================== 1 =====================
 \section{Tổng quan}
 \subsection{Tính năng chính}\label{sec:1}
 
+VPU nằm giữa đường xả của systolic array và cổng ghi buffer C. Mỗi chu kỳ nó nhận tối đa một đoạn hàng 8 giá trị INT32 từ array. Khi \sig{POST_EN} = 1, nó cộng bias, requantize, ReLU và kẹp từng lane, rồi ghi Y (INT8) vào buffer C. Khi \sig{POST_EN} = 0, nó ghi nguyên C (INT32). Độ trễ cố định \sig{LAT} = 4 chu kỳ, thông lượng một đoạn hàng mỗi chu kỳ, không bao giờ chờ và không có đầu ra lỗi. Trong tài liệu này \sig{POST_EN} và \sig{RELU_EN} là cấu hình của job, tương ứng các port \sig{i_post_en} và \sig{i_relu_en}; không có tham số module nào mang tên đó.
 
-VPU nằm giữa đường xả của systolic array và cổng ghi buffer C. Mỗi chu kỳ nó nhận tối đa một đoạn hàng P giá trị INT32 từ array. Khi \sig{POST_EN} = 1, nó cộng bias, requantize, ReLU và kẹp từng lane, rồi ghi Y (INT8) vào buffer C. Khi \sig{POST_EN} = 0, nó ghi nguyên C (INT32). Độ trễ cố định \sig{LAT} chu kỳ, thông lượng một đoạn hàng mỗi chu kỳ, không bao giờ chờ và không có đầu ra lỗi.
-
-
-
-\paragraph{Chức năng}\label{tab:1-1}
+\paragraph{Chức năng}\label{par:1-1}
 \begin{itemize}
-\item Với mỗi đoạn hàng (i, $j_0$, mask), lane c hợp lệ ứng với j = $j_0+c$. Khi POST\_EN = 1, ghi Y theo công thức dưới đây ở dạng INT8; khi POST\_EN = 0, ghi nguyên C ở dạng INT32.
-\item Lane có mask = 0 không được ghi. Mỗi đoạn hàng vào sinh đúng một lệnh ghi ra, đúng \sig{LAT} chu kỳ sau
-\item Kết quả khớp từng bit với \sig{post_ref()} của \sig{gemm_vpu_model.py}  với mọi giá trị đầu vào INT32, mọi bias INT32, mọi $M_0$ INT32, mọi $sh$ 0 … 31
+\item Với mỗi đoạn hàng (i, $j_0$, mask), lane c hợp lệ ứng với j = $j_0+c$. Khi \sig{POST_EN} = 1, ghi Y theo công thức dưới đây ở dạng INT8; khi \sig{POST_EN} = 0, ghi nguyên C ở dạng INT32
+\item Lane có mask = 0 không được ghi. Mỗi đoạn hàng vào sinh đúng một lệnh ghi ra, đúng \sig{LAT} = 4 chu kỳ sau
+\item Kết quả khớp từng bit với công thức chuẩn dưới đây (mô hình tham chiếu \sig{post_ref()} của \sig{gemm_vpu_model.py}; mô hình nằm ở \sig{gemm-accel/model/}, đã chạy lại với baseline ngày 12/11/2026: requant khớp 203 136 trường hợp, pipeline 600 test, 0 lỗi) với mọi giá trị đầu vào INT32, mọi bias INT32, mọi $M_0$ INT32, mọi $sh$ 0 … 31
 \item VPU chỉ đọc buffer BIAS và chỉ ghi buffer C; không đọc buffer C, không đọc A, B, không truy cập DRAM, không giữ trạng thái giữa các tác vụ
-\item Kết quả không phụ thuộc P và không phụ thuộc \sig{MUL_STAGES}
+\item VPU không có đầu ra lỗi
+\item Tài nguyên: 8 lane = 8 bộ nhân 32×32, 8 bộ cộng bias, 8 bộ requant, khoảng 32 DSP trên FPGA; mục tiêu tần số 100 MHz
 \end{itemize}
 
-
-\eqbox{\[
+\[
 \begin{aligned}
 acc &= C[i][j] + bias[j] && \text{(INT32, wrap mod } 2^{32})\\
 prod &= acc \cdot M_0 && \text{(tích có dấu 64 bit, không bao giờ tràn)}\\
-y &= (prod + 2^{30+sh}) \gg (31+sh) && \text{(dịch số học: làm tròn nửa lên)}\\
+y &= (prod + 2^{30+sh}) \ggg (31+sh) && \text{(dịch số học: làm tròn nửa lên)}\\
 y &= \max(y, 0) \ \text{nếu \texttt{RELU\_EN} = 1} \\
 Y[i][j] &= \min(\max(y, -128), 127) && \text{(INT8)}
 \end{aligned}
-\]}
+\]
 
-Bias là độ lệch có dấu dùng chung theo cột. Tích với M0 và dịch 31 + sh ánh xạ giá trị tích lũy sang miền INT8; ReLU tùy chọn chặn giá trị âm trước khi kẹp.
+Bias là độ lệch có dấu dùng chung theo cột. Tích với M0 và dịch 31 + sh ánh xạ giá trị tích lũy sang miền INT8; ReLU (khi \sig{RELU_EN} = 1) chặn giá trị âm trước khi kẹp.
+
+\subsubsection{Dấu, mở rộng dấu và tràn số}
+
+\begin{notebox}[Quyết định baseline — D-27]
+Bảng và các quy tắc dưới đây là văn bản chuẩn về signedness, mở rộng dấu, wrap và saturation của toàn bộ đường dữ liệu (array và VPU). Mọi tài liệu khác dẫn lại phải khớp từng chữ.
+\end{notebox}
+
+\begin{spectable}{|L{0.2}|L{0.2}|L{0.6}|}{Kiểu dữ liệu và quy tắc số học}{tab:1-2}{\textbf{Đại lượng} & \textbf{Kiểu} & \textbf{Quy tắc}}
+A, B & INT8 có dấu & Bù 2, −128 … 127 \\\hline
+
+Tích $a\cdot b$ & 16 bit có dấu & Mở rộng dấu lên 32 bit trước khi cộng \\\hline
+
+C (tích lũy) & INT32 có dấu & Cộng dồn \textbf{wrap mod $2^{32}$}, không bao giờ saturate. Trên miền hợp lệ $|a\cdot b| ≤ 2^{14}$ và K ≤ 32 nên $|C| ≤ 2^{19}$: không bao giờ tràn; quy tắc wrap chỉ để định nghĩa hành vi hình thức \\\hline
+
+bias & INT32 có dấu & $acc = C + bias[j]$ tính trên INT32, \textbf{wrap mod $2^{32}$} \\\hline
+
+\sig{QM0} ($M_0$) & INT32 có dấu & Mọi giá trị 32 bit đều hợp lệ \\\hline
+
+\sig{QSHIFT} ($sh$) & 5 bit không dấu & 0 … 31 \\\hline
+
+$prod = acc\cdot M_0$ & 64 bit có dấu & Không tràn: $|prod| ≤ 2^{62}$ \\\hline
+
+$y$ & 33 bit có dấu (hiện thực) & $y = (prod + 2^{30+sh}) \ggg (31+sh)$: dịch \textbf{số học}, làm tròn \textbf{nửa lên} (về phía +∞). $2^{30+sh} ≤ 2^{61}$ và $|prod| ≤ 2^{62}$ nên phép cộng không tràn 64 bit \\\hline
+
+ReLU & — & Khi \sig{RELU_EN} = 1: $y = \max(y, 0)$ \\\hline
+
+$Y$ & INT8 có dấu & $Y = \min(\max(y, -128), 127)$ — \textbf{chỗ duy nhất trong toàn thiết kế có saturation}; mọi chỗ khác là wrap \\\hline
+
+\end{spectable}
+
+\begin{itemize}
+\item \textbf{Hiện thực hai bước} (tương đương biểu thức chuẩn): $t = prod \ggg (30 + sh)$ giữ \textbf{34 bit}, $y = (t + 1) \ggg 1$ ở \textbf{33 bit}; rồi kẹp: $y > 127$ → 127; $lo = $ (\sig{RELU_EN} ? 0 : −128); $y < lo$ → $lo$; còn lại $y[7:0]$
+\item \textbf{Bắt buộc giữ đủ 34/33 bit}: cắt $t$ về 32 bit cho kết quả sai tại $acc = M_0 = -2^{31}$. Khi đó $prod = 2^{62}$, $sh = 0$: $t = 2^{32}$ (vừa trong 34 bit), $y = 2^{31}$, kẹp được $Y = 127$; nếu cắt $t$ về 32 bit thì $t = 0$, $y = 0$ và $Y = 0$ — sai
+\item Khi \sig{POST_EN} = 0, VPU đi thẳng: \sig{o_y} = $prod3[31:0]$ (chính là C INT32) và \sig{o_c_wr_fmt} = 0
+\end{itemize}
 
 % ===================== 2 =====================
 \subsection{Tham số}\label{sec:2}
-\begin{spectable}{|L{0.2}|L{0.16}|L{0.64}|}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Mặc định} & \textbf{Ý nghĩa}}
-\sig{P} & 8 & Số lane; chỉ nhận 4 hoặc 8. Nối từ \sig{PE_ARRAY_SIZE} của top, cùng giá trị với array \\\hline
+\begin{spectable}{|L{0.2}|L{0.16}|L{0.64}|}{Tham số}{tab:2-1}{\textbf{Tham số} & \textbf{Giá trị} & \textbf{Ý nghĩa}}
+\sig{P} & 8 & Số lane, cố định. Nối từ \sig{PE_ARRAY_SIZE} của top, cùng giá trị với array \\\hline
 
-\sig{MUL_STAGES} & 1 & Số tầng của bộ nhân $acc \cdot M_0$: 1 hoặc 2. Chọn 2 khi bộ nhân 32 × 32 một chu kỳ không đạt tần số mục tiêu \\\hline
+\sig{MUL_STAGES} & 1 & Số tầng của bộ nhân $acc \cdot M_0$. Nối từ \sig{gemm_pkg::VPU_MUL_STAGES} = 1 \\\hline
 
 \sig{LAT} & 4 & localparam = 3 + \sig{MUL_STAGES}: độ trễ từ \sig{i_row_valid} tới \sig{o_c_wr_en} \\\hline
 
@@ -48,14 +91,25 @@ Bias là độ lệch có dấu dùng chung theo cột. Tích với M0 và dịc
 
 \end{spectable}
 
+\begin{spectable}{|L{0.3}|L{0.14}|L{0.56}|}{Hằng dẫn xuất từ P (không phải tham số)}{tab:2-3}{\textbf{Hằng} & \textbf{Giá trị} & \textbf{Công thức, nơi dùng}}
+\sig{ROW_VEC_WIDTH} & 256 bit & 32·P: độ rộng \sig{i_row_data}, \sig{i_bias_rd_data}, \sig{o_c_wr_data} \\\hline
 
-\paragraph{Tham số}\label{tab:2-2}
+\sig{AB_VEC_WIDTH} & 64 bit & 8·P: không có port nào của VPU dùng; liệt kê để thống nhất với array \\\hline
+
+Q, LP & 2, 3 & P/4 và $\log_2 P$: dùng ở SRAM; VPU chỉ dùng LP để kiểm \sig{i_row_col}[2:0] = 0 \\\hline
+
+\end{spectable}
+
+\paragraph{Kiểm tra lúc elaboration}\label{par:2-2}
 \begin{itemize}
-\item P ∉ \{4, 8\} hoặc \sig{MUL_STAGES} ∉ \{1, 2\} phải bị chặn lúc elaboration (\sig{$error} trong \sig{generate})
-\item Giá trị \sig{MUL_STAGES} chỉ khai báo một lần, trong package \sig{gemm_pkg}: \sig{VPU_MUL_STAGES} và \sig{VPU_LATENCY} = 3 + \sig{VPU_MUL_STAGES}. \sig{gemm_accel_top} nối \sig{MUL_STAGES} = \sig{gemm_pkg::VPU_MUL_STAGES} cho VPU và \sig{L_VPU} = \sig{gemm_pkg::VPU_LATENCY} cho array. Không được viết số 4 hay 5 trực tiếp ở top
-\item \sig{gemm_vpu} có kiểm tra elaboration: \sigc{LAT == gemm_pkg::VPU_LATENCY}; sai thì \sig{$error}
+\item P ≠ 8 hoặc \sig{MUL_STAGES} ≠ 1 phải bị chặn lúc elaboration (\sig{$error} trong \sig{generate})
+\item Độ trễ chỉ khai báo một lần, trong package \sig{gemm_pkg}: \sig{VPU_MUL_STAGES} = 1 và \sig{VPU_LATENCY} = 3 + \sig{VPU_MUL_STAGES} = 4. \sig{gemm_accel_top} nối \sig{MUL_STAGES} = \sig{gemm_pkg::VPU_MUL_STAGES} cho VPU và \sig{L_VPU} = \sig{gemm_pkg::VPU_LATENCY} cho array. Không được viết số 4 trực tiếp ở top
+\item \sig{gemm_vpu} có kiểm tra elaboration: \sigc{LAT == gemm_pkg::VPU_LATENCY}; sai thì \sig{$error}. Array kiểm tra đối xứng \sigc{L_VPU == gemm_pkg::VPU_LATENCY}
 \end{itemize}
 
+\begin{notebox}[Quyết định baseline — D-05, D-20]
+\sig{MUL_STAGES} = 1, \sig{LAT} = 4, \sig{L_VPU} = 4. Ở 100 MHz (10 ns) một tầng nhân 32×32 → 64 bit là đủ thời gian. Nếu tổng hợp không đạt 100 MHz, cách sửa đã định trước là đổi \sig{gemm_pkg::VPU_MUL_STAGES} thành 2 (\sig{LAT} = 5, \sig{L_VPU} = 5); đó là một lần phát hành lại baseline, không phải chế độ chạy của baseline này.
+\end{notebox}
 
 % ===================== 3 =====================
 \subsection{Tín hiệu giao tiếp}\label{sec:3}
@@ -65,7 +119,7 @@ Bias là độ lệch có dấu dùng chung theo cột. Tích với M0 và dịc
 
 \sig{clk} & 1 & Input & Clock của khối.\newline Các thanh ghi cập nhật tại cạnh lên. \\\hline
 
-\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Cạnh nhả reset được đồng bộ với clock tại top trước khi đưa tới các module. \\\hline
+\sig{rst_n} & 1 & Input & Reset tích cực mức thấp; được kích hoạt bất đồng bộ.\newline Top cấp \sig{rst_n_sync}: cạnh nhả reset đã được đồng bộ với clock. \\\hline
 
 \sig{i_soft_clr} & 1 & Input & Xung xóa đồng bộ dài một chu kỳ do Main FSM phát.\newline Xóa trạng thái điều khiển tại cạnh lên; phạm vi xóa dữ liệu được quy định trong mục Reset. \\\hline
 
@@ -76,7 +130,7 @@ Bias là độ lệch có dấu dùng chung theo cột. Tích với M0 và dịc
 
 \sig{i_relu_en} & 1 & Input & Cho phép chặn kết quả âm về 0 trước khi kẹp INT8.\newline Bị bỏ qua khi hậu xử lý tắt.\newline Cấu hình giữ ổn định trong suốt COMPUTE, tới khi pipeline đã ghi xong kết quả cuối. \\\hline
 
-\sig{i_quant_m0} & 32 & Input & Hệ số nhân lượng tử M0, số nguyên 32 bit có dấu.\newline Cấu hình giữ ổn định trong suốt COMPUTE, tới khi pipeline đã ghi xong kết quả cuối. \\\hline
+\sig{i_quant_m0} & 32 & Input & Hệ số nhân lượng tử M0, số nguyên 32 bit có dấu (mọi giá trị đều hợp lệ).\newline Cấu hình giữ ổn định trong suốt COMPUTE, tới khi pipeline đã ghi xong kết quả cuối. \\\hline
 
 \sig{i_quant_shift} & 5 & Input & Lượng dịch bổ sung sh, số không dấu từ 0 đến 31.\newline Tổng lượng dịch trong công thức lượng tử là 31 + sh.\newline Cấu hình giữ ổn định trong suốt COMPUTE, tới khi pipeline đã ghi xong kết quả cuối. \\\hline
 
@@ -87,63 +141,61 @@ Bias là độ lệch có dấu dùng chung theo cột. Tích với M0 và dịc
 
 \sig{i_row_idx} & 5 & Input & Chỉ số hàng i của đoạn kết quả.\newline Hợp lệ cùng i\_row\_valid và phải nhỏ hơn M. \\\hline
 
-\sig{i_row_col} & 5 & Input & Cột đầu j0 của đoạn kết quả.\newline Là bội của P, nhỏ hơn N; hợp lệ cùng i\_row\_valid. \\\hline
+\sig{i_row_col} & 5 & Input & Cột đầu j0 của đoạn kết quả.\newline Là bội của 8 (bit [2:0] = 0), nhỏ hơn N; hợp lệ cùng i\_row\_valid. \\\hline
 
-\sig{i_row_data} & 32P & Input & Vector P giá trị INT32 có dấu.\newline Lane c tại bit [32c +: 32] chứa C[i][j0+c]; hợp lệ cùng i\_row\_valid, chỉ dùng lane có mask = 1. \\\hline
+\sig{i_row_data} & 256 & Input & Vector 8 giá trị INT32 có dấu (\sig{ROW_VEC_WIDTH}).\newline Lane c tại bit [32c +: 32] chứa C[i][j0+c]; hợp lệ cùng i\_row\_valid, chỉ dùng lane có mask = 1. \\\hline
 
-\sig{i_row_mask} & P & Input & Mặt nạ các lane hợp lệ của đoạn hàng.\newline Bit c = 1 khi j0 + c < N; bit c = 0 ngăn ghi phần tử tương ứng.\newline Hợp lệ cùng i\_row\_valid. \\\hline
+\sig{i_row_mask} & 8 & Input & Mặt nạ các lane hợp lệ của đoạn hàng: các bit 1 liên tiếp từ bit 0, khác 0.\newline Bit c = 1 khi j0 + c < N; bit c = 0 ngăn ghi phần tử tương ứng.\newline Hợp lệ cùng i\_row\_valid. \\\hline
 
 
 \multicolumn{4}{@{}l}{\textit{Cổng đọc buffer BIAS (VPU là master, không có ready)}} \\\hline
 
-\sig{o_bias_rd_en} & 1 & Output & Yêu cầu đọc P phần tử bias.\newline Bằng 1 khi đoạn hàng hợp lệ và hậu xử lý được bật; dữ liệu về sau một chu kỳ. \\\hline
+\sig{o_bias_rd_en} & 1 & Output & Yêu cầu đọc 8 phần tử bias.\newline Bằng \sig{i_row_valid} ∧ \sig{i_post_en}, tổ hợp trong chính chu kỳ D; dữ liệu về sau một chu kỳ. \\\hline
 
-\sig{o_bias_rd_col} & 5 & Output & Cột đầu j0 của vector bias.\newline Là bội của P; hợp lệ cùng bias read enable. \\\hline
+\sig{o_bias_rd_col} & 5 & Output & Cột đầu j0 của vector bias, bằng \sig{i_row_col} (tổ hợp).\newline Là bội của 8; hợp lệ cùng bias read enable. \\\hline
 
-\sig{i_bias_rd_data} & 32P & Input & Vector P giá trị bias INT32.\newline Lane c tại bit [32c +: 32] chứa bias[j0+c].\newline Hợp lệ đúng một chu kỳ sau yêu cầu; lane bị mask có thể chứa giá trị bất kỳ. \\\hline
+\sig{i_bias_rd_data} & 256 & Input & Vector 8 giá trị bias INT32.\newline Lane c tại bit [32c +: 32] chứa bias[j0+c].\newline Hợp lệ đúng một chu kỳ sau yêu cầu; lane bị mask mang giá trị bất kỳ. \\\hline
 
 
 \multicolumn{4}{@{}l}{\textit{Cổng ghi buffer C (VPU là master, không có ready)}} \\\hline
 
-\sig{o_c_wr_en} & 1 & Output & Cho phép ghi một đoạn hàng kết quả vào buffer C tại cạnh lên.\newline Các trường fmt, row, col, data và mask phải hợp lệ trong chu kỳ này. \\\hline
+\sig{o_c_wr_en} & 1 & Output & Cho phép ghi một đoạn hàng kết quả vào buffer C tại cạnh lên.\newline Các trường fmt, row, col, data và mask hợp lệ trong chu kỳ này. \\\hline
 
-\sig{o_c_wr_fmt} & 1 & Output & Chọn định dạng phần tử ghi C.\newline Giá trị 0: INT32, mỗi phần tử là một word.\newline Giá trị 1: INT8, mỗi phần tử là một byte.\newline Hợp lệ cùng write enable. \\\hline
+\sig{o_c_wr_fmt} & 1 & Output & Chọn định dạng phần tử ghi C.\newline Giá trị 0: INT32, mỗi phần tử là một word.\newline Giá trị 1: INT8, mỗi phần tử là một byte.\newline Hợp lệ cùng write enable; bằng \sig{i_post_en}. \\\hline
 
 \sig{o_c_wr_row} & 5 & Output & Chỉ số hàng i của buffer C cần ghi.\newline Hợp lệ cùng write enable. \\\hline
 
-\sig{o_c_wr_col} & 5 & Output & Cột đầu j0 của đoạn hàng cần ghi.\newline Là bội của P; hợp lệ cùng write enable. \\\hline
+\sig{o_c_wr_col} & 5 & Output & Cột đầu j0 của đoạn hàng cần ghi.\newline Là bội của 8; hợp lệ cùng write enable. \\\hline
 
-\sig{o_c_wr_data} & 32P & Output & Dữ liệu ghi đoạn hàng C.\newline Với fmt = 0, phần tử c nằm tại bit [32c +: 32].\newline Với fmt = 1, phần tử c nằm tại bit [8c +: 8] và phần cao còn lại bằng 0.\newline Hợp lệ cùng write enable. \\\hline
+\sig{o_c_wr_data} & 256 & Output & Dữ liệu ghi đoạn hàng C (\sig{ROW_VEC_WIDTH}).\newline Với fmt = 0, phần tử c nằm tại bit [32c +: 32].\newline Với fmt = 1, phần tử c nằm tại bit [8c +: 8] và bit [255:64] bằng 0.\newline Hợp lệ cùng write enable. \\\hline
 
-\sig{o_c_wr_mask} & P & Output & Cho phép ghi theo phần tử.\newline Bit c = 1 ghi phần tử c theo định dạng fmt; bit c = 0 giữ nguyên phần tử đó.\newline Hợp lệ cùng write enable. \\\hline
+\sig{o_c_wr_mask} & 8 & Output & Cho phép ghi theo phần tử, bằng \sig{i_row_mask} của đoạn hàng tương ứng.\newline Bit c = 1 ghi phần tử c theo định dạng fmt; bit c = 0 giữ nguyên phần tử đó.\newline Hợp lệ cùng write enable. \\\hline
 
 \end{spectable}
 
-\clearpage
 \subsubsection{Quy tắc giao tiếp}
 
 \interfacecard{Array → VPU}
-{Một đoạn hàng P giá trị INT32 kèm hàng, cột đầu và mask.}
+{Một đoạn hàng 8 giá trị INT32 kèm hàng, cột đầu và mask.}
 {Array đẩy; VPU nhận. Không có ready.}
 {VPU phải nhận đoạn hàng ở đúng chu kỳ \sig{i_row_valid} = 1, kể cả khi các chu kỳ liền nhau đều có đoạn hàng.}
-{VPU ghi đoạn hàng đó vào buffer C đúng \sig{LAT} chu kỳ sau. Array tính \sig{o_pe_done} dựa trên con số này (\sig{L_VPU} = \sig{LAT}).}
+{VPU ghi đoạn hàng đó vào buffer C đúng \sig{LAT} = 4 chu kỳ sau. Array tính \sig{o_pe_done} dựa trên con số này (\sig{L_VPU} = \sig{LAT}).}
 
 \interfacecard{VPU ↔ SRAM (BIAS đọc, C ghi)}
-{Đọc P word bias liền nhau; ghi một đoạn hàng của C, có mask.}
+{Đọc 8 word bias liền nhau; ghi một đoạn hàng của C, có mask.}
 {VPU là master trên cả hai cổng. SRAM không có backpressure.}
 {Đọc: dữ liệu về đúng 1 chu kỳ sau yêu cầu. Ghi: có hiệu lực ở cạnh clock cuối chu kỳ \sig{o_c_wr_en} = 1.}
 {Trong pha COMPUTE: VPU là bên duy nhất đọc BIAS và ghi C.}
 
-
-\paragraph{Giao tiếp}\label{tab:3-2}
+\paragraph{Giao tiếp}\label{par:3-2}
 \begin{itemize}
-\item Nguồn phát đăng ký toàn bộ \sig{i_row_*}. Mỗi cặp (hàng, cột đầu) hợp lệ xuất hiện đúng một lần trong tác vụ. \sig{i_row_col} là bội của P; mask khác 0, gồm các bit 1 liên tiếp từ bit 0. Lane c hợp lệ khi cột đầu + c < N. VPU nhận dữ liệu ngay chu kỳ valid, không có ready.
-\item \sig{o_bias_rd_en} = \sig{i_row_valid} ∧ \sig{i_post_en}; \sig{o_bias_rd_col} = \sig{i_row_col}. Đây là đường tổ hợp duy nhất từ input tới output của VPU, được phép vì \sig{i_row_*} lấy từ thanh ghi của array. Khi \sig{i_post_en} = 0, VPU không bao giờ đọc BIAS (buffer BIAS không được nạp ở tác vụ đó)
+\item Nguồn phát đăng ký toàn bộ \sig{i_row_*}. Mỗi cặp (hàng, cột đầu) hợp lệ xuất hiện đúng một lần trong tác vụ. \sig{i_row_col} là bội của 8; mask khác 0, gồm các bit 1 liên tiếp từ bit 0. Lane c hợp lệ khi cột đầu + c < N. VPU nhận dữ liệu ngay chu kỳ valid, không có ready
+\item \sig{o_bias_rd_en} = \sig{i_row_valid} ∧ \sig{i_post_en}; \sig{o_bias_rd_col} = \sig{i_row_col}. Đây là \textbf{đường tổ hợp duy nhất từ input tới output} của VPU (cả thiết kế còn hai đường tổ hợp ở DMA, xem tài liệu hệ thống mục Quy tắc tích hợp), được phép vì \sig{i_row_*} lấy từ thanh ghi của array. Khi \sig{i_post_en} = 0, VPU không bao giờ đọc BIAS (buffer BIAS không được nạp ở tác vụ đó)
 \item VPU chỉ dùng \sig{i_bias_rd_data} ở chu kỳ ngay sau chu kỳ có \sig{o_bias_rd_en} = 1. Lane có mask = 0 được phép mang giá trị bất kỳ, kể cả X trong mô phỏng; X không được lan sang lane có mask = 1
-\item Mọi port \sig{o_c_wr_*} lấy từ thanh ghi. Khi \sig{o_c_wr_en} = 1: \sig{o_c_wr_fmt} = \sig{i_post_en}; \sig{o_c_wr_mask} ≠ 0. Khi \sig{o_c_wr_en} = 0, các port khác có giá trị tùy ý
-\item Cấu hình \sig{i_post_en}, \sig{i_relu_en}, \sig{i_quant_m0}, \sig{i_quant_shift} ổn định từ \sig{pe_start} tới \sig{pe_done} . Vì pipeline rỗng trước đoạn hàng đầu và sau lệnh ghi cuối của mỗi tác vụ, VPU dùng cấu hình trực tiếp, không cần chốt hay đưa cấu hình theo pipeline
+\item Mọi port \sig{o_c_wr_*} lấy từ thanh ghi. Khi \sig{o_c_wr_en} = 1: \sig{o_c_wr_fmt} = \sig{i_post_en}; \sig{o_c_wr_mask} = \sig{i_row_mask} của đoạn hàng, khác 0. Khi \sig{o_c_wr_en} = 0, các port khác không có nghĩa
+\item Cấu hình \sig{i_post_en}, \sig{i_relu_en}, \sig{i_quant_m0}, \sig{i_quant_shift} ổn định từ \sig{pe_start} tới \sig{pe_done}. Vì pipeline rỗng trước đoạn hàng đầu và sau lệnh ghi cuối của mỗi tác vụ, VPU dùng cấu hình trực tiếp, không chốt hay đưa cấu hình theo pipeline
+\item Hàng và cột thừa của tile biên (M, N không chia hết cho 8) không tới VPU dưới dạng lane hợp lệ: hàng thừa không được array xả, cột thừa bị chặn bởi mask (D-26); VPU không cần biết M, N
 \end{itemize}
-
 
 \subsubsection{Ngữ nghĩa lệnh ghi C}
 
@@ -156,34 +208,31 @@ Giao tiếp ghi C có ngữ nghĩa như bảng dưới; mỗi bit mask điều k
 
 \end{spectable}
 
-Với P = 4, một đoạn hàng INT8 là đúng một word; với P = 8 là hai word liền nhau \{i, $j_0/4$\} và \{i, $j_0/4 + 1$\}. Vì N là bội của 4, mask ở chế độ INT8 luôn phủ trọn word, nhưng SRAM vẫn phải dùng byte enable theo mask để đúng với mọi trường hợp.
+Với P = 8, một đoạn hàng INT8 là hai word liền nhau \{i, $j_0/4$\} và \{i, $j_0/4 + 1$\} (lane 0 … 3 vào word thứ nhất, lane 4 … 7 vào word thứ hai). Vì N là bội của 4, mask ở chế độ INT8 luôn phủ trọn word, nhưng SRAM vẫn dùng byte enable theo mask.
 
 % ===================== 4 =====================
-
 \section{Đặc tả thanh ghi}
-Module không có thanh ghi ánh xạ MMIO. Cấu hình được nhận qua các tín hiệu đầu vào; trạng thái nội bộ, điều kiện chốt và reset được mô tả bên dưới.
+Module không có thanh ghi ánh xạ MMIO. Cấu hình (\sig{i_post_en}, \sig{i_relu_en}, \sig{i_quant_m0}, \sig{i_quant_shift}) được nhận qua các tín hiệu đầu vào từ Main FSM, bản gốc nằm trong descriptor (\sig{FLAGS}, \sig{QM0}, \sig{QSHIFT}); các thanh ghi MMIO của hệ thống nằm trong \sig{gemm_register_file}, xem đặc tả hệ thống baseline. Trạng thái nội bộ, điều kiện chốt và reset được mô tả bên dưới.
+
+% ===================== 5 =====================
 \section{Mô tả chức năng}
 \subsection{Tổ chức chức năng}\label{sec:4}
 
-
-VPU là pipeline thẳng \sig{LAT} = 3 + \sig{MUL_STAGES} tầng, không có trạng thái điều khiển: một chuỗi bit hợp lệ và metadata (hàng, cột, mask) chạy song song với P lane dữ liệu giống hệt nhau. Mỗi lane là một \sig{gemm_vpu_lane}. Chế độ \sig{POST_EN} = 0 đi qua cùng các tầng, nên độ trễ không đổi theo chế độ.
-
-
-
+VPU là pipeline thẳng \sig{LAT} = 4 tầng V1 … V4, không có trạng thái điều khiển: một chuỗi bit hợp lệ và metadata (hàng, cột, mask) chạy song song với 8 lane dữ liệu giống hệt nhau. Mỗi lane là một \sig{gemm_vpu_lane}. Chế độ \sig{POST_EN} = 0 đi qua cùng các tầng, nên độ trễ không đổi theo chế độ.
 
 \begin{spectable}{|L{0.08}|L{0.17}|L{0.4}|L{0.35}|}{Các tầng pipeline (D = chu kỳ có \sigc{i_row_valid} = 1)}{tab:4-1}{\textbf{Tầng} & \textbf{Thanh ghi} & \textbf{Tính trong chu kỳ trước khi chốt} & \textbf{Có giá trị ở chu kỳ}}
-V1 & \sig{c1}, meta1 & Chốt \sig{i_row_data}, \sig{i_row_idx/col/mask}; phát đọc bias & D + 1 \\\hline
+V1 & \sig{c1}, meta1, \sig{vld1} & Chốt \sig{i_row_data}, \sig{i_row_idx/col/mask}; phát đọc bias (tổ hợp ở D) & D + 1 \\\hline
 
-V2 & \sig{acc2}, meta2 & \sigc{acc2 = post ? c1 + bias : c1} (32 bit wrap) & D + 2 \\\hline
+V2 & \sig{acc2}, meta2, \sig{vld2} & \sigc{acc2 = post ? c1 + bias : c1} (32 bit wrap) & D + 2 \\\hline
 
-V3 & \sig{prod3}, meta3 & \sigc{prod3 = post ? acc2 × M0 : sext(acc2)} (64 bit), qua \sig{MUL_STAGES} tầng & D + 2 + \sig{MUL_STAGES} \\\hline
+V3 & \sig{prod3}, meta3, \sig{vld3} & \sigc{prod3 = post ? acc2 × M0 : sext(acc2)} (64 bit), một tầng thanh ghi & D + 3 \\\hline
 
-V4 & \sig{o_c_wr_*} & requant(\sig{prod3}) hoặc \sig{prod3[31:0]}; đóng gói theo \sig{fmt} & D + \sig{LAT} \\\hline
+V4 & \sig{o_c_wr_*} & requant(\sig{prod3}) nếu post = 1, \sig{prod3[31:0]} nếu post = 0; đóng gói theo \sig{fmt} & D + 4 \\\hline
 
 \end{spectable}
 
 \begin{spectable}{|L{0.22}|L{0.18}|L{0.6}|}{Module con}{tab:4-2}{\textbf{Module} & \textbf{Instance} & \textbf{Vai trò}}
-\sig{gemm_vpu_lane} & \sig{u_lane[c]} & Đường dữ liệu một lane: thanh ghi \sig{c1}, \sig{acc2}, \sig{prod3}; bộ cộng bias; bộ nhân 32 × 32; đầu ra tổ hợp \sig{o_y} \\\hline
+\sig{gemm_vpu_lane} & \sig{u_lane[c]} & Đường dữ liệu một lane (c = 0 … 7): thanh ghi \sig{c1}, \sig{acc2}, \sig{prod3}; bộ cộng bias; bộ nhân 32 × 32; đầu ra tổ hợp \sig{o_y} \\\hline
 
 \sig{gemm_vpu_requant} & \sig{u_rq} (trong lane) & Tổ hợp: dịch có làm tròn, ReLU, kẹp; 64 bit → INT8 \\\hline
 
@@ -191,7 +240,28 @@ V4 & \sig{o_c_wr_*} & requant(\sig{prod3}) hoặc \sig{prod3[31:0]}; đóng gói
 
 \end{spectable}
 
-% ===================== 5 =====================
+\begin{spectable}{|L{0.46}|L{0.18}|L{0.36}|}{Kiểm kê thanh ghi (P = 8, \sigc{MUL_STAGES} = 1)}{tab:4-3}{\textbf{Thanh ghi} & \textbf{Số bit} & \textbf{Loại}}
+\sig{c1} (8 lane × 32 bit) & 256 & Dữ liệu, không reset \\\hline
+
+\sig{acc2} (8 lane × 32 bit) & 256 & Dữ liệu, không reset \\\hline
+
+\sig{prod3} (8 lane × 64 bit) & 512 & Dữ liệu, không reset \\\hline
+
+Tổng thanh ghi dữ liệu lane & 1 024 & Dữ liệu, không reset \\\hline
+
+\sig{o_c_wr_data} & 256 & Dữ liệu, không reset \\\hline
+
+\sig{o_c_wr_fmt}, \sig{o_c_wr_row}, \sig{o_c_wr_col}, \sig{o_c_wr_mask} & 1 + 5 + 5 + 8 = 19 & Dữ liệu, không reset \\\hline
+
+meta1, meta2, meta3 (mỗi tầng idx 5 + col 5 + mask 8 = 18 bit) & 54 & Dữ liệu, không reset \\\hline
+
+\sig{vld1}, \sig{vld2}, \sig{vld3}, \sig{o_c_wr_en} & 4 & Trạng thái, reset bất đồng bộ về 0 \\\hline
+
+Tổng đầu ra, metadata và bit hợp lệ & 333 & 256 + 19 + 54 + 4 \\\hline
+
+\end{spectable}
+
+% ===================== 6 =====================
 \subsection{Module con}\label{sec:5}
 
 \subsubsection{\texorpdfstring{\sigc{gemm_vpu_lane}}{gemm\_vpu\_lane}}\label{sec:5.1}
@@ -202,7 +272,7 @@ V4 & \sig{o_c_wr_*} & requant(\sig{prod3}) hoặc \sig{prod3[31:0]}; đóng gói
 \sig{i_post_en} & 1 & Input & Cho phép hậu xử lý: 0 xuất INT32 nguyên gốc; 1 cộng bias, lượng tử hóa và xuất INT8.\newline Cấu hình giữ ổn định trong suốt COMPUTE, tới khi pipeline đã ghi xong kết quả cuối. \\\hline
 \sig{i_relu_en} & 1 & Input & Cho phép chặn kết quả âm về 0 trước khi kẹp INT8.\newline Bị bỏ qua khi hậu xử lý tắt.\newline Cấu hình giữ ổn định trong suốt COMPUTE, tới khi pipeline đã ghi xong kết quả cuối. \\\hline
 
-\sig{i_m0} & 32 & Input & Hệ số nhân lượng tử M0, INT32 có dấu.\newline Giữ ổn định suốt quá trình xử lý các đoạn hàng của job. \\\hline
+\sig{i_m0} & 32 & Input & Hệ số nhân lượng tử M0, INT32 có dấu (khai báo \sig{signed}, hoặc ép \sig{signed'()} trước khi nhân).\newline Giữ ổn định suốt quá trình xử lý các đoạn hàng của job. \\\hline
 
 \sig{i_sh} & 5 & Input & Lượng dịch bổ sung sh, không dấu, từ 0 đến 31.\newline Công thức lượng tử dùng tổng lượng dịch 31 + sh. \\\hline
 
@@ -214,20 +284,14 @@ V4 & \sig{o_c_wr_*} & requant(\sig{prod3}) hoặc \sig{prod3[31:0]}; đóng gói
 
 \end{spectable}
 
-
-\paragraph{\sigc{gemm_vpu_lane}}\label{tab:5-2}
+\paragraph{\sigc{gemm_vpu_lane}}\label{par:5-2}
 \begin{itemize}
-\item \sigc{c1 <= i_c} mỗi chu kỳ. \sigc{acc2 <= i_post_en ? c1 + i_bias : c1}, cộng 32 bit wrap. Mux phải chọn \sig{c1} (không phải cộng với 0) để X của \sig{i_bias} không lan khi không đọc bias
-\item \sig{prod3} = \sig{acc2} × \sig{i_m0}, nhân có dấu 32 × 32 → 64 bit, khi \sig{i_post_en} = 1; = \sig{acc2} mở rộng dấu lên 64 bit khi \sig{i_post_en} = 0. Mux có thể đặt ở bất kỳ tầng nào trong bộ nhân vì cấu hình không đổi trong tác vụ
-\item \sig{MUL_STAGES} = 1: \sig{prod3} là một thanh ghi sau bộ nhân tổ hợp. \sig{MUL_STAGES} = 2: thêm đúng một tầng thanh ghi bên trong bộ nhân; cách chia do người hiện thực chọn (gợi ý ở notebox dưới). Lane có đúng \sig{MUL_STAGES} + 2 tầng thanh ghi từ \sig{i_c} tới \sig{prod3}
+\item \sigc{c1 <= i_c} mỗi chu kỳ. \sigc{acc2 <= i_post_en ? c1 + i_bias : c1}, cộng 32 bit wrap mod $2^{32}$. Mux chọn \sig{c1} (không phải cộng với 0) để X của \sig{i_bias} không lan khi không đọc bias
+\item \sig{prod3} = \sig{acc2} × \sig{i_m0}, nhân có dấu 32 × 32 → 64 bit, khi \sig{i_post_en} = 1; = \sig{acc2} mở rộng dấu lên 64 bit khi \sig{i_post_en} = 0. Mux đặt ở đầu vào thanh ghi \sig{prod3}, sau bộ nhân tổ hợp
+\item \sig{prod3} là một thanh ghi sau bộ nhân tổ hợp (\sig{MUL_STAGES} = 1). Lane có đúng 3 tầng thanh ghi từ \sig{i_c} tới \sig{prod3}: \sig{c1}, \sig{acc2}, \sig{prod3}
 \item \sig{o_y} = \sig{i_post_en} ? \{\{24\{Y[7]\}\}, Y\} : \sig{prod3[31:0]}, với Y = \sig{o_y} của \sig{gemm_vpu_requant}(\sig{prod3}, \sig{i_sh}, \sig{i_relu_en}). Không có thanh ghi sau \sig{prod3} trong lane
-\item Thanh ghi dữ liệu của lane cập nhật mọi chu kỳ (cho phép thêm enable theo bit hợp lệ để giảm công suất; kết quả không được thay đổi)
+\item Thanh ghi dữ liệu của lane cập nhật mọi chu kỳ, không có enable và không có giá trị reset
 \end{itemize}
-
-
-\begin{notebox}[Gợi ý chia bộ nhân khi MUL\_STAGES = 2]
-Tách $M_0 = M_{hi}\cdot 2^{16} + M_{lo}$, với $M_{hi}$ = \sig{M0[31:16]} có dấu và $M_{lo}$ = \sig{M0[15:0]} không dấu. Tầng thứ nhất chốt hai tích riêng $p_{hi} = acc \cdot M_{hi}$ (48 bit có dấu) và $p_{lo} = acc \cdot M_{lo}$ (49 bit có dấu); tầng thứ hai chốt $prod = (p_{hi} \ll 16) + p_{lo}$. Mỗi tích riêng khớp tốt với 2 khối DSP của FPGA.
-\end{notebox}
 
 \begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
 // Tham khảo (SystemVerilog, MUL_STAGES = 1)
@@ -237,7 +301,8 @@ logic signed [7:0]  y8;
 always_ff @(posedge clk) begin
   c1    <= i_c;
   acc2  <= i_post_en ? (c1 + i_bias) : c1;
-  prod3 <= i_post_en ? (64'(acc2) * 64'(i_m0)) : 64'(acc2);
+  // hai toán hạng 32 bit có dấu, mở rộng dấu lên 64 bit: tổng hợp ra bộ nhân 32×32 → 64
+  prod3 <= i_post_en ? (64'(acc2) * 64'(signed'(i_m0))) : 64'(acc2);
 end
 gemm_vpu_requant u_rq (.i_prod(prod3), .i_sh(i_sh), .i_relu(i_relu_en), .o_y(y8));
 assign o_y = i_post_en ? 32'(y8) : prod3[31:0];   // 32'(y8): mở rộng dấu
@@ -252,39 +317,37 @@ assign o_y = i_post_en ? 32'(y8) : prod3[31:0];   // 32'(y8): mở rộng dấu
 
 \sig{i_relu} & 1 & Input & Cho phép ReLU trong khối requant.\newline Khi bằng 1, chặn giá trị âm về 0 trước khi kẹp INT8. \\\hline
 
-\sig{o_y} & 8 & Output & Kết quả INT8 có dấu sau làm tròn, tùy chọn ReLU và kẹp.\newline Đây là đầu ra thuần tổ hợp. \\\hline
+\sig{o_y} & 8 & Output & Kết quả INT8 có dấu sau làm tròn, ReLU (nếu bật) và kẹp.\newline Đây là đầu ra thuần tổ hợp. \\\hline
 
 \end{spectable}
 
-Công thức chuẩn $y = (prod + 2^{30+sh}) \gg (31+sh)$ cần cộng 64 bit rồi dịch 64 bit. Module hiện thực một dạng tương đương rẻ hơn:
+Công thức chuẩn $y = (prod + 2^{30+sh}) \ggg (31+sh)$ cần cộng 64 bit rồi dịch 64 bit. Module hiện thực đúng một dạng tương đương rẻ hơn:
 
-\eqbox{\[
+\[
 \begin{gathered}
 t = prod \ggg (30 + sh) \quad (\text{34 bit}), \qquad
 y = (t + 1) \ggg 1 \quad (\text{33 bit}) \\[4pt]
 Y = \begin{cases} 127 & y > 127 \\ lo & y < lo \\ y[7:0] & \text{còn lại} \end{cases}, \qquad lo = \begin{cases} 0 & relu = 1 \\ -128 & relu = 0 \end{cases}
 \end{gathered}
-\]}
+\]
 
 \begin{notebox}[Vì sao hai cách cho cùng kết quả]
-Đặt $n = 31 + sh$ và viết $prod = t\cdot 2^{n-1} + r$ với $0 ≤ r < 2^{n-1}$ (tức $t = prod \ggg (n-1)$). Khi đó $(prod + 2^{n-1}) / 2^n = (t+1)/2 + r/2^n$, với $0 ≤ r/2^n < 1/2$. Nếu $t+1$ chẵn, phần nguyên là $(t+1)/2$; nếu $t+1$ lẻ, $(t+1)/2 = q + 1/2$ và cộng thêm một số nhỏ hơn 1/2 vẫn cho phần nguyên q. Cả hai trường hợp đều bằng $(t+1) \ggg 1$. ReLU rồi kẹp tương đương với kẹp vào $[lo, 127]$. Mô hình kiểm tra 203 136 trường hợp, gồm mọi tổ hợp biên và các giá trị đúng nửa.
+Đặt $n = 31 + sh$ và viết $prod = t\cdot 2^{n-1} + r$ với $0 ≤ r < 2^{n-1}$ (tức $t = prod \ggg (n-1)$). Khi đó $(prod + 2^{n-1}) / 2^n = (t+1)/2 + r/2^n$, với $0 ≤ r/2^n < 1/2$. Nếu $t+1$ chẵn, phần nguyên là $(t+1)/2$; nếu $t+1$ lẻ, $(t+1)/2 = q + 1/2$ và cộng thêm một số nhỏ hơn 1/2 vẫn cho phần nguyên q. Cả hai trường hợp đều bằng $(t+1) \ggg 1$. ReLU rồi kẹp tương đương với kẹp vào $[lo, 127]$. Theo \sig{spec_1}, mô hình của nguồn kiểm tra 203 136 trường hợp, gồm mọi tổ hợp biên và các giá trị đúng nửa; mô hình đó không có trong thư mục nguồn và chưa được chạy lại. Phép kiểm chạy riêng khi soạn baseline cho kết quả khớp từng bit trên 800 576 trường hợp (xem tài liệu quyết định, mục Giới hạn của bộ tài liệu).
 \end{notebox}
 
-
-\paragraph{\sigc{gemm_vpu_requant}}\label{tab:5-4}
+\paragraph{\sigc{gemm_vpu_requant}}\label{par:5-4}
 \begin{itemize}
-\item Kết quả phải bằng công thức chuẩn ở mục 1 với mọi \sig{i_prod} trong $[-2^{62}+2^{31}, 2^{62}]$ (miền của $acc \cdot M_0$), mọi \sig{i_sh}, mọi \sig{i_relu}. Được dùng dạng hiện thực bất kỳ thỏa điều này
-\item Độ rộng tối thiểu: $|prod| ≤ 2^{62}$ và dịch ≥ 30 nên $t ∈ [-2^{32}, 2^{32}]$, cần 34 bit có dấu; $y$ cần 33 bit có dấu. Không được cắt ngắn hơn: cắt t về 32 bit sai ở $acc = M_0 = -2^{31}$
-\item Lượng dịch $30 + sh$ ∈ [30, 61]. Bộ dịch chỉ cần sinh 34 bit của t, tức cửa sổ \sigc{i_prod[63 : 30+sh]} mở rộng dấu lên 34 bit; hiện thực được bằng mux 32 vị trí, không cần bộ dịch 64 bit đầy đủ
+\item Kết quả phải bằng công thức chuẩn với mọi \sig{i_prod} trong $[-2^{62}+2^{31}, 2^{62}]$ (miền của $acc \cdot M_0$), mọi \sig{i_sh}, mọi \sig{i_relu}
+\item Độ rộng: $|prod| ≤ 2^{62}$ và dịch ≥ 30 nên $t ∈ [-2^{32}, 2^{32}]$, cần \textbf{34 bit có dấu}; $y$ cần \textbf{33 bit có dấu}. Không được cắt ngắn hơn: cắt t về 32 bit sai ở $acc = M_0 = -2^{31}$ (mục Dấu, mở rộng dấu và tràn số)
+\item Lượng dịch $30 + sh$ ∈ [30, 61]. Bộ dịch chỉ sinh 34 bit của t, tức cửa sổ \sigc{i_prod[63 : 30+sh]} mở rộng dấu lên 34 bit, hiện thực bằng mux 32 vị trí, không dùng bộ dịch 64 bit đầy đủ
 \item Dịch là dịch số học (giữ dấu); làm tròn là nửa lên (về phía +∞), không phải nửa ra xa 0
 \end{itemize}
-
 
 \begin{Verbatim}[frame=leftline,framerule=2pt,rulecolor=\color{brand},xleftmargin=6pt,samepage=true]
 // Tham khảo (SystemVerilog)
 logic signed [33:0] t;
 logic signed [32:0] y, lo;
-assign t  = 34'(i_prod >>> (6'd30 + 6'(i_sh)));
+assign t  = 34'(signed'(i_prod) >>> (6'd30 + 6'(i_sh)));  // dịch số học
 assign y  = 33'((35'(t) + 35'sd1) >>> 1);
 assign lo = i_relu ? 33'sd0 : -33'sd128;
 always_comb
@@ -295,118 +358,151 @@ always_comb
 
 \subsubsection{Logic trong top}\label{sec:5.3}
 
-
-\paragraph{Logic trong \sigc{gemm_vpu}}\label{tab:5-5}
+\paragraph{Logic trong \sigc{gemm_vpu}}\label{par:5-5}
 \begin{itemize}
-\item Chuỗi hợp lệ: \sigc{vld1 <= i_row_valid}, \sigc{vld2 <= vld1}, rồi \sig{MUL_STAGES} tầng tới \sig{vld3}, \sigc{o_c_wr_en <= vld3}. Metadata (idx, col, mask) đi cùng chuỗi đó. Mọi bit hợp lệ reset và clear về 0; metadata không bắt buộc reset
-\item Đọc bias khi row valid và post enable cùng bằng 1, dùng cột đầu của đoạn hàng. Lane c nhận \sigc{i_c = i_row_data[32c +: 32]}, \sigc{i_bias = i_bias_rd_data[32c +: 32]}
-\item Thanh ghi đầu ra V4, nạp mọi chu kỳ: \sigc{o_c_wr_fmt <= i_post_en}; \sig{o_c_wr_row}, \sig{o_c_wr_col}, \sig{o_c_wr_mask} <= metadata của \sig{vld3}. Dữ liệu: khi \sig{i_post_en} = 0, \sigc{o_c_wr_data[32c +: 32] <= o_y} của lane c; khi \sig{i_post_en} = 1, \sigc{o_c_wr_data[8c +: 8] <= o_y[7:0]} của lane c và \sigc{o_c_wr_data[32P-1 : 8P] <= 0}
+\item Chuỗi hợp lệ: \sigc{vld1 <= i_row_valid}, \sigc{vld2 <= vld1}, \sigc{vld3 <= vld2}, \sigc{o_c_wr_en <= vld3}. Metadata (idx, col, mask) đi cùng chuỗi đó. Mọi bit hợp lệ reset và clear về 0; metadata không có giá trị reset
+\item Đọc bias khi row valid và post enable cùng bằng 1, tổ hợp trong chu kỳ D, dùng cột đầu của đoạn hàng. Lane c nhận \sigc{i_c = i_row_data[32c +: 32]}, \sigc{i_bias = i_bias_rd_data[32c +: 32]}
+\item Thanh ghi đầu ra V4, nạp mọi chu kỳ: \sigc{o_c_wr_fmt <= i_post_en}; \sig{o_c_wr_row}, \sig{o_c_wr_col}, \sig{o_c_wr_mask} <= metadata của \sig{vld3}. Dữ liệu: khi \sig{i_post_en} = 0, \sigc{o_c_wr_data[32c +: 32] <= o_y} của lane c; khi \sig{i_post_en} = 1, \sigc{o_c_wr_data[8c +: 8] <= o_y[7:0]} của lane c và \sigc{o_c_wr_data[255 : 64] <= 0}
 \item Không có bộ đếm, FSM, hay trạng thái nào khác. VPU không biết M, N, K và không biết khi nào tác vụ kết thúc
 \end{itemize}
-
 
 % ===================== 6 =====================
 \subsection{Timing}\label{sec:6}
 
-
-Mọi lệnh ghi xảy ra đúng \sig{LAT} chu kỳ sau đoạn hàng tương ứng. Thông lượng là một đoạn hàng mỗi chu kỳ với mọi mẫu đến (liền nhau hoặc có khoảng trống). Các công thức dưới đây là quy định; RTL phải khớp đúng từng chu kỳ.
-
+Mọi lệnh ghi xảy ra đúng \sig{LAT} = 4 chu kỳ sau đoạn hàng tương ứng. Thông lượng là một đoạn hàng mỗi chu kỳ với mọi mẫu đến (liền nhau hoặc có khoảng trống). Các công thức dưới đây là quy định; RTL phải khớp đúng từng chu kỳ.
 
 \begin{spectable}{|L{0.5}|L{0.5}|}{Thời điểm các sự kiện (D = chu kỳ có \sigc{i_row_valid} = 1)}{tab:6-1}{\textbf{Sự kiện} & \textbf{Chu kỳ}}
-\sig{o_bias_rd_en} (nếu \sig{POST_EN} = 1) & D \\\hline
+\sig{o_bias_rd_en}, \sig{o_bias_rd_col} (nếu \sig{POST_EN} = 1; tổ hợp) & D \\\hline
 
 \sig{i_bias_rd_data} hợp lệ, \sig{c1} hợp lệ & D + 1 \\\hline
 
 \sig{acc2} hợp lệ & D + 2 \\\hline
 
-\sig{prod3} hợp lệ & D + 2 + \sig{MUL_STAGES} \\\hline
+\sig{prod3} hợp lệ & D + 3 \\\hline
 
-\sig{o_c_wr_en} = 1, dữ liệu ghi vào C ở cạnh clock cuối chu kỳ & D + \sig{LAT} = D + 3 + \sig{MUL_STAGES} \\\hline
+\sig{o_c_wr_en} = 1, dữ liệu ghi vào C ở cạnh clock cuối chu kỳ & D + \sig{LAT} = D + 4 \\\hline
 
-\sig{o_pe_done} của array (đoạn hàng cuối ở $D_{last}$) & $D_{last}$ + \sig{LAT} + 1 \\\hline
+\sig{o_pe_done} của array (đoạn hàng cuối ở $D_{last}$) & $D_{last}$ + \sig{LAT} + 1 = $D_{last}$ + 5 \\\hline
 
 \end{spectable}
 
-Với $N_T=\lceil M/P\rceil\lceil N/P\rceil$ tile và $r_{last}=M-P(\lceil M/P\rceil-1)$ hàng hợp lệ của tile cuối, thời gian COMPUTE khi tích hợp là $(N_T - 1)\max(K,P) + K + P + r_{last} + \text{LAT} + 3$:
+\begin{figure}[H]
+\centering
+\begin{wave}{9}{-15.5}
+\sname{0}{i\_post\_en} \hi{0}{9}{-0.2}
+\sname{-1.3}{i\_row\_valid} \lo{0}{1}{-1.5} \hi{1}{3}{-1.5} \lo{3}{9}{-1.5}
+\sname{-2.6}{i\_row\_idx} \bus{1}{2}{-2.6}{hàng 0} \bus{2}{3}{-2.6}{hàng 1}
+\sname{-3.9}{o\_bias\_rd\_en} \lo{0}{1}{-4.1} \hi{1}{3}{-4.1} \lo{3}{9}{-4.1}
+\sname{-5.2}{i\_bias\_rd\_data} \bus{2}{3}{-5.2}{bias 0} \bus{3}{4}{-5.2}{bias 1}
+\sname{-6.5}{c1} \bus{2}{3}{-6.5}{hàng 0} \bus{3}{4}{-6.5}{hàng 1}
+\sname{-7.8}{acc2} \bus{3}{4}{-7.8}{hàng 0} \bus{4}{5}{-7.8}{hàng 1}
+\sname{-9.1}{prod3} \bus{4}{5}{-9.1}{hàng 0} \bus{5}{6}{-9.1}{hàng 1}
+\sname{-10.4}{o\_c\_wr\_en} \lo{0}{5}{-10.6} \hi{5}{7}{-10.6} \lo{7}{9}{-10.6}
+\sname{-11.7}{o\_c\_wr\_fmt} \lo{0}{5}{-11.9} \hi{5}{7}{-11.9} \lo{7}{9}{-11.9}
+\sname{-13.0}{o\_c\_wr\_row} \bus{5}{6}{-13.0}{0} \bus{6}{7}{-13.0}{1}
+\sname{-14.3}{o\_c\_wr\_data} \bus{5}{6}{-14.3}{Y hàng 0} \bus{6}{7}{-14.3}{Y hàng 1}
+\end{wave}
+\caption{Pipeline V1 … V4 với \sigc{POST_EN} = 1 cho hai đoạn hàng liên tiếp (hàng 0 ở D = 1, hàng 1 ở D = 2, cùng j0 = 0, mask 8'hFF). \sigc{o_bias_rd_en} lên cùng chu kỳ \sigc{i_row_valid} (đường tổ hợp); bias và \sigc{c1} ở D + 1, \sigc{acc2} ở D + 2, \sigc{prod3} ở D + 3, \sigc{o_c_wr_en} ở D + 4 = chu kỳ 5 và 6; \sigc{o_c_wr_fmt} = \sigc{i_post_en} = 1}\label{fig:6-1}
+\end{figure}
 
-\begin{spectable}{|L{0.28}|L{0.18}|L{0.18}|L{0.18}|L{0.18}|}{Số chu kỳ từ \sigc{pe_start} tới \sigc{pe_done} khi có VPU}{tab:6-2}{\textbf{(M, N, K)} & \textbf{P = 4, LAT = 4} & \textbf{P = 4, LAT = 5} & \textbf{P = 8, LAT = 4} & \textbf{P = 8, LAT = 5}}
-(32, 32, 32) & 2062 & 2063 & 534 & 535 \\\hline
+\begin{notebox}[Quyết định baseline — D-06]
+$r_{last}$ là \textbf{chỉ số} của hàng hợp lệ cuối của tile cuối, tức (số hàng hợp lệ của tile cuối) − 1. Thời gian COMPUTE khi tích hợp với array:
+\[
+\begin{gathered}\text{COMPUTE\_CYCLES} = (N_T - 1)\cdot\max(K, P) + K + P + r_{last} + \text{LAT} + 3\\ N_T = \lceil M/8\rceil\lceil N/8\rceil,\qquad r_{last} = M - 8(\lceil M/8\rceil - 1) - 1\end{gathered}
+\]
+Kiểm chứng M = N = K = 32: $T_M = T_N = 4$, $N_T = 16$, $I = \max(32, 8) = 32$, $r_{last} = 7$, LAT = 4 → 15·32 + 32 + 8 + 7 + 4 + 3 = \textbf{534 chu kỳ} = 5,34 µs ở 100 MHz.
 
-(20, 12, 8) & 134 & 135 & 66 & 67 \\\hline
+Hiệu chỉnh so với spec\_1: bản spec\_1 của VPU định nghĩa $r_{last}$ là số hàng hợp lệ (1 … P); với định nghĩa đó công thức lệch 1 chu kỳ so với con số 534 (và so với tài liệu array). Baseline dùng định nghĩa chỉ số ở mọi tài liệu.
+\end{notebox}
 
-(2, 4, 4) (ví dụ) & 16 & 17 & 20 & 21 \\\hline
+\begin{spectable}{|L{0.38}|L{0.26}|L{0.36}|}{Số chu kỳ từ \sigc{pe_start} tới \sigc{pe_done} khi có VPU (P = 8, LAT = 4)}{tab:6-2}{\textbf{(M, N, K)} & \textbf{Số chu kỳ} & \textbf{Tính}}
+(32, 32, 32) & 534 & $15\cdot 32 + 32 + 8 + 7 + 4 + 3$ \\\hline
+
+(20, 12, 8) & 66 & $N_T = 6$, $r_{last} = 3$: $5\cdot 8 + 8 + 8 + 3 + 4 + 3$ \\\hline
+
+(8, 8, 4) & 26 & $0 + 4 + 8 + 7 + 4 + 3$ \\\hline
+
+(2, 8, 4) (ví dụ bên dưới) & 20 & $r_{last} = 1$: $0 + 4 + 8 + 1 + 4 + 3$ \\\hline
 
 \end{spectable}
 
 \subsubsection{Ví dụ số học và đóng gói}
-Ví dụ với P = 4, \sig{MUL_STAGES} = 1: M = 2, N = 4, K = 4, một tile. Array xả hàng 0 ở chu kỳ 10 và hàng 1 ở chu kỳ 11. Cấu hình \sig{POST_EN} = 1, \sig{RELU_EN} = 1, $M_0$ = 1\,717\,986\,918, $sh$ = 5, $bias = (500, -300, 200, -1000)$.
+Ví dụ với M = 2, N = 8, K = 4, một tile. Array xả hàng 0 ở chu kỳ 14 và hàng 1 ở chu kỳ 15 ($D_0(r) = 14 + r$); \sig{o_pe_done} ở 15 + 5 = 20. Cấu hình \sig{POST_EN} = 1, \sig{RELU_EN} = 1, $M_0$ = 1\,717\,986\,918, $sh$ = 5, $bias = (500, -300, 200, -1000, 100, 3000, -50, 25)$. Hàng 0 có $c1 = (-58, 219, 250, 7, 1000, -2000, -1, 0)$; hàng 1 có $c1 = (92, 93, -173, -14, -500, 64, 3, -3)$.
 
-
-
-\begin{spectable}{|L{0.08}|L{0.08}|L{0.09}|L{0.1}|L{0.25}|L{0.1}|L{0.1}|L{0.1}|}{Giá trị từng tầng của ví dụ}{tab:6-3}{\textbf{(i, j)} & \textbf{c1} & \textbf{bias} & \textbf{acc2} & \textbf{prod3} & \textbf{t = prod $\gg$ 35} & \textbf{y} & \textbf{Y}}
+\begin{spectable}{|L{0.08}|L{0.08}|L{0.09}|L{0.1}|L{0.25}|L{0.1}|L{0.1}|L{0.1}|}{Giá trị từng tầng của ví dụ}{tab:6-3}{\textbf{(i, j)} & \textbf{c1} & \textbf{bias} & \textbf{acc2} & \textbf{prod3} & \textbf{t = prod $\ggg$ 35} & \textbf{y} & \textbf{Y}}
 (0,0) & −58 & 500 & 442 & 759 350 217 756 & 22 & 11 & 11 \\\hline
 (0,1) & 219 & −300 & −81 & −139 156 940 358 & −5 & −2 & 0 \\\hline
 (0,2) & 250 & 200 & 450 & 773 094 113 100 & 22 & 11 & 11 \\\hline
 (0,3) & 7 & −1000 & −993 & −1 705 961 009 574 & −50 & −25 & 0 \\\hline
+(0,4) & 1000 & 100 & 1100 & 1 889 785 609 800 & 54 & 27 & 27 \\\hline
+(0,5) & −2000 & 3000 & 1000 & 1 717 986 918 000 & 49 & 25 & 25 \\\hline
+(0,6) & −1 & −50 & −51 & −87 617 332 818 & −3 & −1 & 0 \\\hline
+(0,7) & 0 & 25 & 25 & 42 949 672 950 & 1 & 1 & 1 \\\hline
 (1,0) & 92 & 500 & 592 & 1 017 048 255 456 & 29 & 15 & 15 \\\hline
 (1,1) & 93 & −300 & −207 & −355 623 292 026 & −11 & −5 & 0 \\\hline
 (1,2) & −173 & 200 & 27 & 46 385 646 786 & 1 & 1 & 1 \\\hline
 (1,3) & −14 & −1000 & −1014 & −1 742 038 734 852 & −51 & −25 & 0 \\\hline
+(1,4) & −500 & 100 & −400 & −687 194 767 200 & −20 & −10 & 0 \\\hline
+(1,5) & 64 & 3000 & 3064 & 5 263 911 916 752 & 153 & 77 & 77 \\\hline
+(1,6) & 3 & −50 & −47 & −80 745 385 146 & −3 & −1 & 0 \\\hline
+(1,7) & −3 & 25 & 22 & 37 795 712 196 & 1 & 1 & 1 \\\hline
 \end{spectable}
 
-Lệnh ghi ở chu kỳ 14 có \sig{o_c_wr_fmt} = 1, hàng 0, cột 0, mask 4'b1111, dữ liệu byte 0 … 3 = (11, 0, 11, 0), tức word \{0, 0\} của C = \sig{0x000B000B}. Chu kỳ 15 ghi word \{1, 0\} = \sig{0x0001000F}. Với \sig{POST_EN} = 0, cùng hai chu kỳ đó ghi bốn word INT32 mỗi hàng: (−58, 219, 250, 7) và (92, 93, −173, −14), và không có \sig{o_bias_rd_en}.
+Lệnh ghi ở chu kỳ 18 ($D$ = 14) có \sig{o_c_wr_fmt} = 1, hàng 0, cột 0, mask 8'hFF, dữ liệu byte 0 … 7 = (11, 0, 11, 0, 27, 25, 0, 1), tức word \{0, 0\} của C = \sig{0x000B000B} và word \{0, 1\} = \sig{0x0100191B}. Chu kỳ 19 ghi hàng 1 với byte 0 … 7 = (15, 0, 1, 0, 0, 77, 0, 1): word \{1, 0\} = \sig{0x0001000F}, word \{1, 1\} = \sig{0x01004D00}. Với \sig{POST_EN} = 0, cùng hai chu kỳ đó ghi tám word INT32 mỗi hàng (\sig{o_c_wr_fmt} = 0): (−58, 219, 250, 7, 1000, −2000, −1, 0) và (92, 93, −173, −14, −500, 64, 3, −3), và không có \sig{o_bias_rd_en}.
 
 % ===================== 7 =====================
 \subsection{Reset và soft clear}\label{sec:7}
 
+\begin{notebox}[Quyết định baseline — D-21]
+Bit hợp lệ dùng \sig{always_ff @(posedge clk or negedge rst_n)} (\sig{rst_n} ở đây là \sig{rst_n_sync} do top cấp). Thanh ghi dữ liệu thuần (\sig{c1}, \sig{acc2}, \sig{prod3}, metadata, \sig{o_c_wr_fmt/row/col/data/mask}) dùng \sig{always_ff @(posedge clk)} và không có giá trị reset. Không có latch.
+\end{notebox}
 
-\paragraph{Reset}\label{tab:7-1}
+\paragraph{Reset}\label{par:7-1}
 \begin{itemize}
-\item \sig{rst_n} = 0 (bất đồng bộ): \sig{vld1}, \sig{vld2}, các bit hợp lệ trong tầng nhân, \sig{o_c_wr_en} về 0
-\item \sig{i_soft_clr} = 1 (đồng bộ): xóa vld1, vld2, các bit hợp lệ trong tầng nhân và o\_c\_wr\_en về 0 ở cạnh clock cuối chu kỳ đó; mọi đoạn hàng đang trong pipeline bị bỏ. Nếu \sig{o_c_wr_en} đã bằng 1 trong chính chu kỳ có \sig{i_soft_clr}, lệnh ghi đó vẫn xảy ra; điều này được phép vì nội dung scratchpad sau soft reset là không xác định
-\item Thanh ghi dữ liệu (\sig{c1}, \sig{acc2}, \sig{prod3}, metadata, \sig{o_c_wr_fmt/row/col/data/mask}) không bắt buộc reset; mọi đường dùng chúng đều bị chặn bởi bit hợp lệ
+\item \sig{rst_n} = 0 (bất đồng bộ): \sig{vld1}, \sig{vld2}, \sig{vld3}, \sig{o_c_wr_en} về 0
+\item \sig{i_soft_clr} = 1 (đồng bộ): xóa \sig{vld1}, \sig{vld2}, \sig{vld3} và \sig{o_c_wr_en} về 0 ở cạnh clock cuối chu kỳ đó; mọi đoạn hàng đang trong pipeline bị bỏ. Nếu \sig{o_c_wr_en} đã bằng 1 trong chính chu kỳ có \sig{i_soft_clr}, lệnh ghi đó vẫn xảy ra; điều này chấp nhận được vì nội dung scratchpad sau soft reset là không xác định
+\item Thanh ghi dữ liệu (\sig{c1}, \sig{acc2}, \sig{prod3}, metadata, \sig{o_c_wr_fmt/row/col/data/mask}) không có giá trị reset; mọi đường dùng chúng đều bị chặn bởi bit hợp lệ
 \end{itemize}
-
 
 % ===================== 8 =====================
 \subsection{Quy tắc hiện thực}\label{sec:8}
 
-
-\paragraph{Hiện thực}\label{tab:8-1}
+\paragraph{Hiện thực}\label{par:8-1}
 \begin{itemize}
-\item SystemVerilog tổng hợp được; \sigc{always_ff @(posedge clk or negedge rst_n)} cho thanh ghi có reset, \sigc{always_ff @(posedge clk)} cho thanh ghi dữ liệu; không có latch
-\item Mọi phép cộng, nhân, dịch, so sánh dùng kiểu \sig{signed} rõ ràng; dịch phải dùng \sig{>>>} trên toán hạng có dấu. Không dùng phép chia hay modulo
-\item Mỗi module con trong file riêng, cùng tên module; P lane dựng bằng \sig{generate}
-\item Chỉ cổng đọc bias được phép phụ thuộc tổ hợp vào đầu vào; mọi ngõ ra khác của \sig{gemm_vpu} được đăng ký.
-\item Đường dài nhất dự kiến là bộ nhân 32 × 32 (tầng V3) và chuỗi dịch, cộng 34 bit, so sánh (tầng V4). Nếu V4 không đạt tần số, được phép chuyển phép dịch sang cuối V3 (chốt t thay vì \sig{prod3}) mà không đổi \sig{LAT}
+\item SystemVerilog tổng hợp được; \sig{always_ff @(posedge clk or negedge rst_n)} cho bit hợp lệ, \sig{always_ff @(posedge clk)} cho thanh ghi dữ liệu thuần; không có latch
+\item Mọi phép cộng, nhân, dịch, so sánh dùng kiểu \sig{signed} rõ ràng; dịch dùng \sig{>>>} trên toán hạng có dấu. Không dùng phép chia hay modulo
+\item Mỗi module con trong file riêng, cùng tên module; 8 lane dựng bằng \sig{generate}
+\item Chỉ cổng đọc bias (\sig{o_bias_rd_en}, \sig{o_bias_rd_col}) phụ thuộc tổ hợp vào đầu vào; mọi ngõ ra khác của \sig{gemm_vpu} được đăng ký
+\item Đường dài nhất dự kiến là bộ nhân 32 × 32 (tầng V3) và chuỗi dịch, cộng 34 bit, so sánh (tầng V4). Phép dịch nằm trong V4; \sig{LAT} = 4 là cố định
+\item Lane có mask = 0 mang giá trị bất kỳ, kể cả X; giá trị đó không được lan sang lane có mask = 1 và không được tới \sig{o_c_wr_data} của lane được ghi (mỗi lane độc lập, mux của \sig{acc2} chọn \sig{c1} khi \sig{i_post_en} = 0)
+\item VPU không có đầu ra lỗi
 \end{itemize}
 
-
-
-\paragraph{Assertion bắt buộc trong RTL (SVA, chỉ trong mô phỏng)}\label{tab:8-2}
+\paragraph{Assertion bắt buộc trong RTL (SVA, chỉ trong mô phỏng)}\label{par:8-2}
 \begin{itemize}
-\item \sig{i_row_valid} → \sigc{i_row_col[$clog2(P)-1:0] == 0}
-\item \sig{i_row_valid} → (\sigc{i_row_mask != 0}) ∧ \sigc{$onehot(i_row_mask + 1'b1)} (mask là dãy bit 1 liền nhau từ bit 0, hoặc toàn 1)
-\item \sig{o_bias_rd_en} → \sig{i_post_en}
-\item (\sig{vld1} ∨ \sig{vld2} ∨ … ∨ \sig{o_c_wr_en}) → \sig{$stable} của cả bốn tín hiệu cấu hình
-\item \sig{o_c_wr_en} → \sigc{o_c_wr_fmt == i_post_en}
-\item \sig{o_c_wr_en} ↔ \sig{i_row_valid} trễ đúng \sig{LAT} chu kỳ (khi không có \sig{i_soft_clr} trong khoảng đó)
-\item Trong \sig{gemm_accel_top}: \sig{u_array.o_pe_done} → không còn bit hợp lệ nào trong pipeline VPU
+\item \textbf{AS-01}: \sig{i_row_valid} → \sigc{i_row_col[2:0] == 0}
+\item \textbf{AS-02}: \sig{i_row_valid} → (\sigc{i_row_mask != 0}) ∧ \sigc{$onehot({1'b0, i_row_mask} + 9'd1)} (mask là dãy bit 1 liền nhau từ bit 0, kể cả toàn 1; cộng ở 9 bit để 8'hFF không tràn về 0)
+\item \textbf{AS-03}: \sig{o_bias_rd_en} → \sig{i_post_en}
+\item \textbf{AS-04}: (\sig{vld1} ∨ \sig{vld2} ∨ \sig{vld3} ∨ \sig{o_c_wr_en}) → \sig{$stable} của cả bốn tín hiệu cấu hình (\sig{i_post_en}, \sig{i_relu_en}, \sig{i_quant_m0}, \sig{i_quant_shift})
+\item \textbf{AS-05}: \sig{o_c_wr_en} → \sigc{o_c_wr_fmt == i_post_en}
+\item \textbf{AS-06}: \sig{o_c_wr_en} ↔ \sig{i_row_valid} trễ đúng \sig{LAT} = 4 chu kỳ (khi không có \sig{i_soft_clr} trong khoảng đó)
+\item \textbf{AS-07}: trong \sig{gemm_accel_top}: \sig{u_array.o_pe_done} → không còn bit hợp lệ nào (\sig{vld1}, \sig{vld2}, \sig{vld3}, \sig{o_c_wr_en}) trong pipeline VPU
 \end{itemize}
 
+\begin{spectable}{|L{0.6}|L{0.4}|}{Tài nguyên ước tính (P = 8, \sigc{MUL_STAGES} = 1)}{tab:8-3}{\textbf{Hạng mục} & \textbf{Số lượng}}
+Bộ nhân 32 × 32 có dấu → 64 bit & 8 \\\hline
 
-\begin{spectable}{|L{0.44}|L{0.28}|L{0.28}|}{Tài nguyên ước tính (\sigc{MUL_STAGES} = 1)}{tab:8-3}{\textbf{Hạng mục} & \textbf{P = 4} & \textbf{P = 8}}
-Bộ nhân 32 × 32 có dấu → 64 bit & 4 & 8 \\\hline
+Bộ cộng 32 bit (bias) & 8 \\\hline
 
-Bộ cộng 32 bit (bias) & 4 & 8 \\\hline
+Bộ requant (dịch 32 vị trí × 34 bit, cộng 34 bit, 2 so sánh) & 8 \\\hline
 
-Bộ requant (dịch 32 vị trí × 34 bit, cộng 34 bit, 2 so sánh) & 4 & 8 \\\hline
+Thanh ghi dữ liệu lane (32 + 32 + 64 bit mỗi lane) & 1 024 bit \\\hline
 
-Thanh ghi dữ liệu lane (32 + 32 + 64 bit mỗi lane) & 512 bit & 1 024 bit \\\hline
+Thanh ghi đầu ra, metadata và bit hợp lệ & 333 bit \\\hline
 
-Thanh ghi đầu ra và metadata & khoảng 190 bit & khoảng 330 bit \\\hline
+DSP trên FPGA (khoảng 4 khối mỗi bộ nhân 32 × 32) & khoảng 32 \\\hline
 
-DSP trên FPGA (khoảng 4 khối mỗi bộ nhân 32 × 32) & khoảng 16 & khoảng 32 \\\hline
+Mục tiêu tần số & 100 MHz (10 ns) \\\hline
 
 \end{spectable}
 

@@ -1,16 +1,23 @@
+% =====================================================================
+% Đặc tả hệ thống — gemm_accel_top (spec baseline v1.0)
+% Bố cục mục theo spec_1/system: 1 Tổng quan (gồm Tín hiệu giao tiếp),
+% 2 Đặc tả thanh ghi, 3 Mô tả chức năng và dữ liệu, 4 Luồng vận hành,
+% 5 Chuỗi descriptor và scratchpad ping-pong, 6 Tích hợp các module.
+% Biên dịch: latexmk (XeLaTeX). Cần Inkscape cho các sơ đồ SVG.
+% =====================================================================
 \documentclass[10pt,a4paper]{article}
-\newcommand{\ModHeader}{gemm\_accel\_top}
-\input{../../common/timer_style.tex}
+\newcommand{\DocHeader}{GEMM INT8 Accelerator · Đặc tả hệ thống}
+\newcommand{\DocVersion}{baseline v1.0}
+\newcommand{\DocFooter}{Bộ tăng tốc GEMM INT8 trên Chipyard SoC — spec baseline}
+\newcommand{\DocPdfTitle}{GEMM INT8 Accelerator — Đặc tả hệ thống baseline v1.0}
+\input{../../common/spec_style.tex}
 \begin{document}
-{\Large\bfseries ĐẶC TẢ THIẾT KẾ gemm\_accel\_top}\par
-\tableofcontents
-\clearpage
-% Mục 1 — Tổng quan
+\input{frontmatter/titlepage}
 \input{sections/s1_tong_quan}
-\input{sections/s6_port_top}
-\input{sections/s3_lap_trinh}
-\input{sections/s2_chuc_nang}
-\input{sections/s4_luong_van_hanh}
-\input{sections/s7_bo_sung}
-\input{sections/s5_cac_khoi}
+\input{sections/s2_port_top}
+\input{sections/s3_thanh_ghi}
+\input{sections/s4_chuc_nang}
+\input{sections/s5_luong_van_hanh}
+\input{sections/s6_chuoi_descriptor}
+\input{sections/s7_tich_hop}
 \end{document}

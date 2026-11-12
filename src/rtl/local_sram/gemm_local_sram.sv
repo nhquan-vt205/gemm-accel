@@ -10,8 +10,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 module gemm_local_sram #(
-  parameter int P = 8,
-  parameter int HAS_PINGPONG = 1
+  parameter int P = 8   // chỉ nhận 8; NB = 2 bank cố định (D-09)
 ) (
   input  logic              clk,
   input  logic              rst_n,

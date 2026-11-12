@@ -1,3 +1,5 @@
+# Biên dịch bằng XeLaTeX (pdf_mode 5 = xelatex)
 $pdf_mode = 5;
-@default_files = ("main.tex");
-ensure_path("TEXINPUTS", "../../../common//");
+@default_files = ('main.tex');
+# Sơ đồ SVG: gói svg gọi Inkscape, cần -shell-escape
+$xelatex = 'xelatex -shell-escape %O %S';
