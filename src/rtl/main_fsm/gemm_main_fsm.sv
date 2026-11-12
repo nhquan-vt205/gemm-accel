@@ -10,9 +10,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 module gemm_main_fsm #(
-  parameter int P = 8,
-  parameter int HAS_CHAIN = 1,
-  parameter int HAS_PINGPONG = 1
+  parameter int P = 8   // chỉ nhận 8 (D-04); NB = 2 là localparam (D-09)
 ) (
   input  logic              clk,
   input  logic              rst_n,
@@ -20,16 +18,7 @@ module gemm_main_fsm #(
   output logic              o_soft_busy,
   // ---- Register File -> FSM
   input  logic              i_start_pulse,
-  input  logic [1:0]        i_start_kind,
   input  logic              i_soft_req,
-  input  logic [31:0]       i_cfg_dim,
-  input  logic [31:0]       i_cfg_a_addr,
-  input  logic [31:0]       i_cfg_b_addr,
-  input  logic [31:0]       i_cfg_c_addr,
-  input  logic [31:0]       i_cfg_post_ctrl,
-  input  logic [31:0]       i_cfg_bias_addr,
-  input  logic [31:0]       i_cfg_qm0,
-  input  logic [31:0]       i_cfg_qshift,
   input  logic [31:0]       i_cfg_desc_ptr,
   // ---- FSM -> Register File
   output logic              o_done_pulse,

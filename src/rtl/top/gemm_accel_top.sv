@@ -1,13 +1,11 @@
 // =============================================================================
 // gemm_accel_top.sv — top level của accelerator
-// Port top (44 port) KHÓA CỨNG theo spec hệ thống v1.0 mục 6 — không được sửa.
-// Nối dây nội bộ theo spec gemm_main_fsm, phụ lục A (bảng A-1).
+// Port top (44 port) KHÓA CỨNG theo spec hệ thống baseline mục 1.7 — không được sửa.
+// Nối dây nội bộ theo spec hệ thống baseline (chỉ chế độ chuỗi descriptor + ping-pong, D-01, D-09).
 // =============================================================================
 module gemm_accel_top #(
-  parameter int PE_ARRAY_SIZE   = 8,   // P: 4 hoặc 8
-  parameter int MAX_BURST_BEATS = 16,  // 1 … 256
-  parameter int HAS_CHAIN       = 0,   // 1: chế độ chuỗi descriptor (mục 7.2)
-  parameter int HAS_PINGPONG    = 0    // 1: scratchpad ping-pong (mục 7.3), cần HAS_CHAIN = 1
+  parameter int PE_ARRAY_SIZE   = 8,   // P: giá trị hợp lệ duy nhất là 8 (D-04)
+  parameter int MAX_BURST_BEATS = 16   // 1 … 256; baseline chốt 16 (D-36)
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -59,14 +57,11 @@ module gemm_accel_top #(
   localparam int P = PE_ARRAY_SIZE;
 
   // ---- Kiểm tra tham số lúc elaboration ----
-  if (P != 4 && P != 8) begin : g_bad_p
-    $error("PE_ARRAY_SIZE phải là 4 hoặc 8");
+  if (P != 8) begin : g_bad_p
+    $error("PE_ARRAY_SIZE phải bằng 8 (D-04)");
   end
   if (MAX_BURST_BEATS < 1 || MAX_BURST_BEATS > 256) begin : g_bad_burst
     $error("MAX_BURST_BEATS phải trong 1 … 256");
-  end
-  if (HAS_PINGPONG != 0 && HAS_CHAIN == 0) begin : g_bad_pp
-    $error("HAS_PINGPONG = 1 đòi hỏi HAS_CHAIN = 1");
   end
 
   // ===========================================================================
@@ -80,9 +75,7 @@ module gemm_accel_top #(
   // ===========================================================================
   // RF <-> FSM
   logic        start_pulse, soft_req, soft_busy;
-  logic [1:0]  start_kind;
-  logic [31:0] cfg_dim, cfg_a_addr, cfg_b_addr, cfg_c_addr, cfg_post_ctrl;
-  logic [31:0] cfg_bias_addr, cfg_qm0, cfg_qshift, cfg_desc_ptr;
+  logic [31:0] cfg_desc_ptr;
   logic        done_pulse, err_pulse;
   logic [3:0]  err_code;
   logic        perf_load, perf_comp, perf_store;
@@ -133,15 +126,12 @@ module gemm_accel_top #(
   // ===========================================================================
   // Register File
   // ===========================================================================
-  gemm_register_file #(.P(P), .HAS_CHAIN(HAS_CHAIN), .HAS_PINGPONG(HAS_PINGPONG)) u_regfile (
+  gemm_register_file #(.P(P)) u_regfile (
     .clk, .rst_n(rst_n_sync), .i_soft_clr(soft_clr),
     .s_axi_awaddr, .s_axi_awvalid, .s_axi_awready, .s_axi_wdata, .s_axi_wstrb, .s_axi_wvalid,
     .s_axi_wready, .s_axi_bresp, .s_axi_bvalid, .s_axi_bready, .s_axi_araddr, .s_axi_arvalid,
     .s_axi_arready, .s_axi_rdata, .s_axi_rresp, .s_axi_rvalid, .s_axi_rready,
-    .o_start_pulse(start_pulse), .o_start_kind(start_kind), .o_soft_req(soft_req),
-    .o_cfg_dim(cfg_dim), .o_cfg_a_addr(cfg_a_addr), .o_cfg_b_addr(cfg_b_addr), .o_cfg_c_addr(cfg_c_addr),
-    .o_cfg_post_ctrl(cfg_post_ctrl), .o_cfg_bias_addr(cfg_bias_addr), .o_cfg_qm0(cfg_qm0),
-    .o_cfg_qshift(cfg_qshift), .o_cfg_desc_ptr(cfg_desc_ptr),
+    .o_start_pulse(start_pulse), .o_soft_req(soft_req), .o_cfg_desc_ptr(cfg_desc_ptr),
     .i_soft_busy(soft_busy), .i_done_pulse(done_pulse), .i_err_pulse(err_pulse), .i_err_code(err_code),
     .i_perf_load(perf_load), .i_perf_comp(perf_comp), .i_perf_store(perf_store),
     .i_err_desc_addr(err_desc_addr), .i_desc_done_cnt(desc_done_cnt)
@@ -150,12 +140,9 @@ module gemm_accel_top #(
   // ===========================================================================
   // Main FSM
   // ===========================================================================
-  gemm_main_fsm #(.P(P), .HAS_CHAIN(HAS_CHAIN), .HAS_PINGPONG(HAS_PINGPONG)) u_main_fsm (
+  gemm_main_fsm #(.P(P)) u_main_fsm (
     .clk, .rst_n(rst_n_sync), .o_soft_clr(soft_clr), .o_soft_busy(soft_busy),
-    .i_start_pulse(start_pulse), .i_start_kind(start_kind), .i_soft_req(soft_req),
-    .i_cfg_dim(cfg_dim), .i_cfg_a_addr(cfg_a_addr), .i_cfg_b_addr(cfg_b_addr), .i_cfg_c_addr(cfg_c_addr),
-    .i_cfg_post_ctrl(cfg_post_ctrl), .i_cfg_bias_addr(cfg_bias_addr), .i_cfg_qm0(cfg_qm0),
-    .i_cfg_qshift(cfg_qshift), .i_cfg_desc_ptr(cfg_desc_ptr),
+    .i_start_pulse(start_pulse), .i_soft_req(soft_req), .i_cfg_desc_ptr(cfg_desc_ptr),
     .o_done_pulse(done_pulse), .o_err_pulse(err_pulse), .o_err_code(err_code),
     .o_perf_load(perf_load), .o_perf_comp(perf_comp), .o_perf_store(perf_store),
     .o_err_desc_addr(err_desc_addr), .o_desc_done_cnt(desc_done_cnt),
@@ -199,7 +186,7 @@ module gemm_accel_top #(
   // ===========================================================================
   // Scratchpad
   // ===========================================================================
-  gemm_local_sram #(.P(P), .HAS_PINGPONG(HAS_PINGPONG)) u_sram (
+  gemm_local_sram #(.P(P)) u_sram (
     .clk, .rst_n(rst_n_sync), .i_soft_clr(soft_clr),
     .i_dw_valid(spm_wr_valid), .i_dw_buf(spm_wr_buf), .i_dw_bank(spm_wr_bank),
     .i_dw_addr(spm_wr_addr), .i_dw_data(spm_wr_data), .o_dw_ready(spm_wr_ready),

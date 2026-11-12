@@ -1,11 +1,14 @@
-"""Mô hình tham chiếu của bộ lập lịch trong gemm_main_fsm (chế độ đơn, chuỗi, ping-pong).
+"""Mô hình tham chiếu của bộ lập lịch trong gemm_main_fsm (chuỗi descriptor + ping-pong NB = 2).
+
+Theo spec baseline: chỉ có chế độ chuỗi descriptor (D-01) và NB = 2 (D-09); không có chế độ đơn.
 
 Mô hình chạy theo chu kỳ, đúng các quy tắc của spec FSM:
   * ba engine Đọc / Tính / Ghi, slot "đã nạp" 1 mục giữa Đọc và Tính,
     Tính giữ job ở trạng thái HAND tới khi Ghi nhận;
-  * chọn bank theo bảng 7-4; bộ đếm rcnt[A|B|BIAS][bank], wcnt[C][bank];
-  * NB = 1 (không ping-pong): mọi pha dùng bus/SRAM loại trừ nhau, ưu tiên Ghi > Tính > Đọc;
-  * WAIT_PREV, REUSE_B, LAST, bản ghi lỗi giữ descriptor nhỏ nhất (DSC-08).
+  * chọn bank luân phiên; bộ đếm rcnt[A|B|BIAS][bank], wcnt[C][bank] (spec FSM, gemm_bank_sb);
+  * NB = 1 chỉ là lịch tham chiếu để so sánh (mọi pha loại trừ nhau, ưu tiên Ghi > Tính > Đọc),
+    không phải cấu hình phần cứng; phần cứng baseline luôn NB = 2;
+  * WAIT_PREV, REUSE_B, LAST, bản ghi lỗi giữ descriptor nhỏ nhất.
 Dữ liệu được mô hình thật (DRAM theo byte, bank SRAM theo phần tử): mọi bên đọc
 lấy dữ liệu ở đầu và cuối pha và phải thấy giống nhau, nên mọi ghi đè sai bank bị phát hiện.
 Kết quả DRAM được so với thực thi tuần tự từng descriptor.
@@ -444,19 +447,7 @@ if __name__ == '__main__':
                             if j['POST']: assert dr.rd8(j['C'] + i * ldc + x) == ref2.rd8(j['C'] + i * ldc + x)
                             else: assert dr.rd32(j['C'] + i * ldc + 4 * x) == ref2.rd32(j['C'] + i * ldc + 4 * x)
             assert sch.perf['LOAD'] + sch.perf['COMP'] + sch.perf['STORE'] >= 0
-    print("lập lịch: %d chuỗi DONE (khớp tuần tự), %d lỗi AXI, %d lỗi cấu hình — NB=1 và NB=2 đều đạt" %
+    print("lập lịch: %d chuỗi DONE (khớp tuần tự), %d lỗi AXI, %d lỗi cấu hình — NB=2 (phần cứng) và NB=1 (tham chiếu) đều đạt" %
           (stats['ok'] // 2, stats['err'] // 2, stats['cfg'] // 2))
     print("số cặp pha chạy chồng khi NB=2: %d" % overlap[0])
-    print("tổng chu kỳ các chuỗi DONE: NB=1 %d, NB=2 %d (%.2fx)" % (speed[1], speed[2], speed[1] / speed[2]))
-    # chế độ đơn
-    for trial in range(300):
-        dram = Dram(); descs = make_chain(rng, 1, dram)
-        j = descs[0]; j.update(LDA=0, LDB=0, LDC=0, REUSE=0, WAITP=0, LAST=1)
-        ref = copy.deepcopy(dram); sequential_ref(descs, ref, False)
-        for NB in (1, 2):
-            dr = copy.deepcopy(dram); sch = Sched(NB, False, descs, dr, rng)
-            assert sch.run()[0] == 'DONE' and dr.b == ref.b
-            ph = sorted(sch.phases)
-            for a, b in zip(ph, ph[1:]): assert a[1] <= b[0]
-            assert [p[2] for p in ph] == (['LBIAS'] if j['POST'] else []) + ['LA', 'LB', 'COMP', 'STORE']
-    print("chế độ đơn: 300 tác vụ, thứ tự pha LOAD_BIAS → LOAD_A → LOAD_B → COMPUTE → STORE_C, tuần tự")
+    print("tổng chu kỳ các chuỗi DONE: tham chiếu tuần tự NB=1 %d, ping-pong NB=2 %d (%.2fx)" % (speed[1], speed[2], speed[1] / speed[2]))

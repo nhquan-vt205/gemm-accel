@@ -7,7 +7,7 @@
 #   make clean
 #
 # Ví dụ:  make sim TB=tb_gemm_vpu TC=unit/vpu/basic
-#         make sim TB=tb_gemm_accel_top TC=top/single_basic PARAMS="HAS_CHAIN=1 HAS_PINGPONG=1"
+#         make sim TB=tb_gemm_accel_top TC=top/chain_basic PARAMS="MAX_BURST_BEATS=8"
 #
 # Quy ước (xem README.md ở gốc repo):
 #   * filelist của tb nằm cạnh tb, cùng tên: src/tb/**/<TB>.f (dùng -F, đường dẫn tương đối)
